@@ -1,3 +1,16 @@
+# PupBerg 🐾
+
+A fork of [gbe_fork](https://github.com/Detanup01/gbe_fork) (Goldberg Steam Emulator) with a custom puppy-themed in-game overlay.
+
+- **PupBerg overlay**: open it with `Shift + Tab` or `Home`. It has Home, Friends, Achievements, Network, Gallery and Settings pages, several themes (Midnight Pup, Golden Retriever, Husky, Shiba, Pink Neon, Catppuccin Frappe, Custom) and a UI scale setting.
+- **ZeroTier integration**: join or leave ZeroTier networks from the overlay, so friends running PupBerg can play together like on a LAN. Friends' IPs and the ZeroTier subnet broadcast are added as discovery targets at runtime.
+- **Input fallback**: the hotkey and mouse still work in games whose input the overlay hook can't see (for example SDL3 / sdl2-compat games on Linux).
+- The original gbe_fork overlay is still available: set `frontend=classic` in `[overlay::pupberg]`, or use Settings -> "Switch to classic overlay".
+
+Enable the overlay with `enable_experimental_overlay=1` in `steam_settings/configs.overlay.ini`. All PupBerg options are documented in `post_build/steam_settings.EXAMPLE/configs.overlay.EXAMPLE.ini`, under `[overlay::pupberg]`. Changes made in the overlay are saved to `pupberg_prefs.json` in the emulator's global settings folder.
+
+---
+
 ## :large_orange_diamond: **This is a fork**
 Fork of https://gitlab.com/Mr_Goldberg/goldberg_emulator
 

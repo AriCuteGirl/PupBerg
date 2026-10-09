@@ -18,6 +18,8 @@
 
 static constexpr size_t max_chat_len = 768;
 
+class PupOverlay;
+
 enum window_state
 {
     window_state_none           = 0,
@@ -113,6 +115,9 @@ struct NotificationsCoords
 
 class Steam_Overlay
 {
+    // PupBerg overlay frontend, see pupberg/pup_overlay.h
+    friend class PupOverlay;
+
     constexpr static const char ACH_SOUNDS_FOLDER[] = "sounds";
     constexpr static const int renderer_detector_polling_ms = 100;
 
@@ -295,6 +300,13 @@ class Steam_Overlay
 
     std::recursive_mutex overlay_mutex{};
     std::atomic<bool> setup_overlay_called = false;
+
+    std::unique_ptr<PupOverlay> pup_ui{};
+    // toggles coming from the InGameOverlay hook and from the PupBerg input fallback are merged
+    std::atomic<int64_t> last_toggle_ms{};
+    std::atomic<bool> hook_toggle_seen = false;
+    void toggle_overlay_deduped(bool from_hook);
+    static const char* const* get_valid_languages(int &count);
 
     std::map<std::string, std::vector<char>> wav_files{
         { "overlay_achievement_notification.wav", std::vector<char>{} },

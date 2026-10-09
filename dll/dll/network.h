@@ -110,6 +110,9 @@ class Networking
     uint32 appid;
     std::chrono::high_resolution_clock::time_point last_broadcast;
     std::vector<IP_PORT> custom_broadcasts;
+    // PupBerg: broadcast targets added at runtime (ex: ZeroTier peers), merged into custom_broadcasts in Run()
+    std::mutex pending_custom_broadcasts_mutex{};
+    std::vector<IP_PORT> pending_custom_broadcasts{};
 
     std::vector<struct TCP_Socket> accepted;
     std::recursive_mutex mutex;
@@ -142,6 +145,8 @@ public:
     static std::set<IP_PORT> resolve_ip(std::string dns);
     
     void addListenId(CSteamID id);
+    // PupBerg: thread-safe, ip/port in host byte order, port 0 = our own listen port
+    void add_custom_broadcast(uint32 ip, uint16 port = 0);
     void setAppID(uint32 appid);
     void Run();
 

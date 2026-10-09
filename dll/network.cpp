@@ -905,8 +905,31 @@ void Networking::send_announce_broadcasts()
     PRINT_DEBUG("sent broadcasts");
 }
 
+void Networking::add_custom_broadcast(uint32 ip, uint16 port)
+{
+    IP_PORT addr{};
+    addr.ip = htonl(ip);
+    addr.port = htons(port ? port : udp_port);
+    std::lock_guard lock(pending_custom_broadcasts_mutex);
+    pending_custom_broadcasts.push_back(addr);
+}
+
 void Networking::Run()
 {
+    {
+        std::lock_guard lock(pending_custom_broadcasts_mutex);
+        for (auto &addr : pending_custom_broadcasts) {
+            bool exists = std::any_of(custom_broadcasts.begin(), custom_broadcasts.end(), [&addr](const IP_PORT &a) { return a.ip == addr.ip && a.port == addr.port; });
+            if (!exists) {
+                PRINT_DEBUG("adding runtime custom broadcast %X:%u", ntohl(addr.ip), ntohs(addr.port));
+                custom_broadcasts.push_back(addr);
+                // force refreshing the broadcast info and the whitelist on next broadcast
+                number_broadcasts = -1;
+            }
+        }
+        pending_custom_broadcasts.clear();
+    }
+
     std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
     double time_extra = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_run).count();
     last_run = now;

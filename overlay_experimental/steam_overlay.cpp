@@ -44,6 +44,8 @@
 #include "fonts/unifont.hpp"
 // builtin audio
 #include "overlay/notification.h"
+// PupBerg frontend
+#include "pupberg/pup_overlay.h"
 
 #define URL_WINDOW_NAME "URL Window"
 
@@ -90,6 +92,12 @@ static constexpr const char* valid_languages[] = {
 
 // ListBoxHeader() is deprecated and inlined inside <imgui.h>
 // Helper to calculate size from items_count and height_in_items
+const char* const* Steam_Overlay::get_valid_languages(int &count)
+{
+    count = static_cast<int>(sizeof(valid_languages) / sizeof(valid_languages[0]));
+    return valid_languages;
+}
+
 static inline bool ImGuiHelper_BeginListBox(const char* label, int items_count) {
     int min_items = items_count < 7 ? items_count : 7;
     float height = ImGui::GetTextLineHeightWithSpacing() * (min_items + 0.25f) + ImGui::GetStyle().FramePadding.y * 2.0f;
@@ -270,12 +278,16 @@ Steam_Overlay::Steam_Overlay(Settings* settings, Local_Storage *local_storage, S
 
     this->network->setCallback(CALLBACK_ID_STEAM_MESSAGES, settings->get_local_steam_id(), &Steam_Overlay::overlay_networking_callback, this);
     this->run_every_runcb->add(&Steam_Overlay::overlay_run_callback, this);
+
+    pup_ui = std::make_unique<PupOverlay>(*this);
 }
 
 Steam_Overlay::~Steam_Overlay()
 {
     if (settings->disable_overlay) return;
 
+    // stops the ZeroTier worker thread before the networking object goes away
+    pup_ui.reset();
     UnSetupOverlay();
 
     this->network->rmCallback(CALLBACK_ID_STEAM_MESSAGES, settings->get_local_steam_id(), &Steam_Overlay::overlay_networking_callback, this);
@@ -617,10 +629,29 @@ void Steam_Overlay::overlay_state_hook(bool ready)
 bool Steam_Overlay::open_overlay_hook(bool toggle)
 {
     if (toggle) {
-        ShowOverlay(!show_overlay);
+        toggle_overlay_deduped(true);
     }
 
     return show_overlay;
+}
+
+void Steam_Overlay::toggle_overlay_deduped(bool from_hook)
+{
+    if (from_hook) hook_toggle_seen = true;
+
+    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    // the same key press may be seen by both the hook and the fallback poller
+    if (now - last_toggle_ms < 400) return;
+    last_toggle_ms = now;
+
+    PRINT_DEBUG("toggle from %s", from_hook ? "hook" : "PupBerg fallback");
+    ShowOverlay(!show_overlay);
+
+    // the hook can't see this game's input: hiding the app input would make it replace the
+    // real cursor position with a stale saved one, and the overlay would be unclickable
+    if (!from_hook && !hook_toggle_seen && show_overlay && _renderer) {
+        _renderer->HideAppInputs(false);
+    }
 }
 
 void Steam_Overlay::allow_renderer_frame_processing(bool state, bool cleaning_up_overlay)
@@ -1815,9 +1846,15 @@ void Steam_Overlay::overlay_render_proc()
     // Process any captured screenshots and save them to disk
     process_captured_screenshots();
 
+    if (pup_ui) pup_ui->tick(show_overlay);
     if (show_overlay) {
-        render_main_window();
-        render_gallery_window();
+        if (pup_ui && !settings->pupberg.classic_frontend) {
+            pup_ui->render();
+        } else {
+            render_main_window();
+            render_gallery_window();
+            if (pup_ui) pup_ui->render_classic_switch();
+        }
     }
 
     // Pinned screenshot (always rendered when active, click-through when overlay closed)
