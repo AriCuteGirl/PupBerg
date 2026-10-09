@@ -38,6 +38,11 @@ fi
 if [[ -d "$target_src_dir/tools/lobby_connect" ]]; then
   cp -f "post_build/README.lobby_connect.md" "$target_src_dir/tools/lobby_connect/"
 fi
+if [[ -d "$target_src_dir/tools" ]]; then
+  mkdir -p "$target_src_dir/tools/account_picker/"
+  cp -f "tools/account_picker/account_picker.sh" "$target_src_dir/tools/account_picker/"
+  cp -f "post_build/README.account_picker.md" "$target_src_dir/tools/account_picker/"
+fi
 # ::::::::::::::::::::::::::::::::::::::::::
 
 archive_dir="$script_dir/$out_dir/$1"

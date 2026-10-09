@@ -73,6 +73,10 @@ if exist "%TARGET_DIR%\tools\generate_interfaces\" (
 if exist "%TARGET_DIR%\tools\lobby_connect\" (
   copy /y "%ROOT%\post_build\README.lobby_connect.md" "%TARGET_DIR%\tools\lobby_connect\"
 )
+
+if exist "%TARGET_DIR%\tools\account_picker\" (
+  copy /y "%ROOT%\post_build\README.account_picker.md" "%TARGET_DIR%\tools\account_picker\"
+)
 ::::::::::::::::::::::::::::::::::::::::::
 
 set "ACHIVE_DIR=%OUT_DIR%\%~1"

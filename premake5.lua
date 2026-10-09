@@ -1330,6 +1330,31 @@ project "tool_generate_interfaces"
 -- End tool_generate_interfaces
 
 
+-- Project tool_account_picker
+project "tool_account_picker"
+    kind "ConsoleApp"
+    location "%{wks.location}/%{prj.name}"
+    targetdir(path.join(build_dir, os_iden, _ACTION, "%{cfg.buildcfg}/tools/account_picker"))
+    targetname "account_picker_%{cfg.platform}"
+
+
+    -- common source & header files
+    ---------
+    files {
+        "tools/account_picker/account_picker.cpp",
+    }
+
+
+    -- Windows libs to link
+    ---------
+    filter { "system:windows", }
+        links {
+            'shell32',
+            'advapi32',
+        }
+-- End tool_account_picker
+
+
 -- Project lib_steamnetworkingsockets START
 project "lib_steamnetworkingsockets"
     kind "SharedLib"
