@@ -76,6 +76,7 @@ if exist "%TARGET_DIR%\tools\lobby_connect\" (
 
 if exist "%TARGET_DIR%\tools\account_picker\" (
   copy /y "%ROOT%\post_build\README.account_picker.md" "%TARGET_DIR%\tools\account_picker\"
+  copy /y "%ROOT%\tools\account_picker\account_picker.sh" "%TARGET_DIR%\tools\account_picker\"
 )
 ::::::::::::::::::::::::::::::::::::::::::
 

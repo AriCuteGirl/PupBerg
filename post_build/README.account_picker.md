@@ -13,7 +13,10 @@ It writes to `%APPDATA%\GSE Saves\settings\configs.user.ini`.
 chmod +x account_picker.sh
 ./account_picker.sh
 ```
-It writes to `~/.local/share/GSE Saves/settings/configs.user.ini` (native games) and also into every Proton/Wine prefix where the emu already ran (Steam `compatdata`, `~/.wine`, `~/.local/share/proton-pfx`).  
+It writes to `~/.local/share/GSE Saves/settings/configs.user.ini`.  
+Windows games running through Proton/Wine read this same file too, so one run covers every game, native or Proton.  
+The script also updates every Proton/Wine prefix where the emu already ran (Steam `compatdata`, `~/.wine`, `~/.local/share/proton-pfx`), for older emu builds.  
+The Windows `.exe` also works under Wine, it finds the Linux Steam install through the `Z:` drive.  
 To also cover a prefix the emu hasn't run in yet, pass it as an argument:
 ```shell
 ./account_picker.sh ~/Games/my-prefix

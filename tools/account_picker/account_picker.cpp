@@ -41,6 +41,17 @@ static std::vector<fs::path> steam_install_candidates()
     }
     dirs.emplace_back(L"C:\\Program Files (x86)\\Steam");
     dirs.emplace_back(L"C:\\Program Files\\Steam");
+
+    // running under Wine/Proton, the Linux home is exposed as "\??\Z:\home\<user>"
+    const wchar_t *wine_home = _wgetenv(L"WINEHOMEDIR");
+    if (wine_home && wine_home[0]) {
+        std::wstring home(wine_home);
+        if (home.rfind(L"\\??\\", 0) == 0) home.erase(0, 4);
+        fs::path linux_home(home);
+        dirs.emplace_back(linux_home / L".steam\\steam");
+        dirs.emplace_back(linux_home / L".local\\share\\Steam");
+        dirs.emplace_back(linux_home / L".var\\app\\com.valvesoftware.Steam\\.local\\share\\Steam");
+    }
 #else
     const char *home = std::getenv("HOME");
     if (home) {
