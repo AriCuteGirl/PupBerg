@@ -1622,6 +1622,28 @@ static void parse_ip_country(class Local_Storage *local_storage, class Settings 
     }
 }
 
+// overlay::pupberg
+static void parse_overlay_pupberg(class Settings *settings_client, class Settings *settings_server)
+{
+    PupBerg_Settings pup{};
+    std::string frontend(common_helpers::to_lower(common_helpers::string_strip(ini.GetValue("overlay::pupberg", "frontend", "pupberg"))));
+    pup.classic_frontend = frontend == "classic";
+    pup.theme = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "theme", pup.theme.c_str()));
+    pup.ui_scale = static_cast<float>(ini.GetDoubleValue("overlay::pupberg", "ui_scale", pup.ui_scale));
+    if (pup.ui_scale < 0.5f || pup.ui_scale > 3.0f) pup.ui_scale = 1.0f;
+    pup.home_key_toggle = ini.GetBoolValue("overlay::pupberg", "home_key_toggle", pup.home_key_toggle);
+
+    pup.zerotier_api = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "zerotier_api", pup.zerotier_api.c_str()));
+    pup.zerotier_token = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "zerotier_token", ""));
+    pup.zerotier_token_path = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "zerotier_token_path", ""));
+    pup.zerotier_network = common_helpers::to_lower(common_helpers::string_strip(ini.GetValue("overlay::pupberg", "zerotier_network", "")));
+    pup.zerotier_auto_join = ini.GetBoolValue("overlay::pupberg", "zerotier_auto_join", false);
+
+    PRINT_DEBUG("PupBerg frontend='%s' theme='%s' scale=%f zt_network='%s'", frontend.c_str(), pup.theme.c_str(), pup.ui_scale, pup.zerotier_network.c_str());
+    settings_client->pupberg = pup;
+    settings_server->pupberg = pup;
+}
+
 // overlay::general
 static void parse_overlay_general_config(class Settings *settings_client, class Settings *settings_server)
 {
@@ -2233,6 +2255,7 @@ uint32 create_localstorage_settings(Settings **settings_client_out, Settings **s
 
     parse_overlay_general_config(settings_client, settings_server);
     parse_overlay_hotkeys(settings_client, settings_server);
+    parse_overlay_pupberg(settings_client, settings_server);
     load_overlay_appearance(settings_client, settings_server, local_storage);
     parse_steam_game_stats_reports_dir(settings_client, settings_server);
     parse_cloud_save(&ini, settings_client, settings_server, local_storage);

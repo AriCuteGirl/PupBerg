@@ -119,6 +119,20 @@ struct Group_Clans {
     std::string tag{};
 };
 
+// PupBerg custom overlay frontend + ZeroTier helper ([overlay::pupberg] in configs.overlay.ini)
+struct PupBerg_Settings {
+    bool classic_frontend = false; // true = use the original gbe_fork overlay window
+    std::string theme = "Midnight Pup";
+    float ui_scale = 1.0f;
+    bool home_key_toggle = true; // the Home key also toggles the overlay
+
+    std::string zerotier_api = "http://127.0.0.1:9993";
+    std::string zerotier_token{}; // raw authtoken, takes precedence over the token path
+    std::string zerotier_token_path{};
+    std::string zerotier_network{}; // 16 hex chars network id to show/join
+    bool zerotier_auto_join = false;
+};
+
 struct Overlay_Appearance {
     enum NotificationPosition {
         top_left, top_center, top_right,
@@ -374,6 +388,7 @@ public:
     // disable all overlay warnings
     bool disable_overlay_warning_any = false;
     Overlay_Appearance overlay_appearance{};
+    PupBerg_Settings pupberg{};
     // toggle overlay buttons
     bool overlay_show_button_user_info = true;
     bool overlay_show_button_achievements = true;
