@@ -46,6 +46,7 @@ jobs:
             # tools
             "tool_lobby_connect",
             "tool_generate_interfaces",
+            "tool_account_picker",
             # tests
             "test_gamepad_linux",
           ]
