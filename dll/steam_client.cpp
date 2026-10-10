@@ -79,6 +79,14 @@ Steam_Client::Steam_Client()
     );
     network = new Networking(settings_server->get_local_steam_id(), appid, settings_server->get_port(), &(settings_server->custom_broadcasts), settings_server->disable_networking);
 
+    // PupBerg: join the configured lobby server room right away (the overlay may change it later)
+    {
+        const auto &pup = settings_client->pupberg;
+        if (pup.server_mode && pup.lobby_auto_join && pup.lobby_room.size()) {
+            network->relay_join(pup.lobby_server, pup.lobby_room, settings_client->get_local_name(), pup.lobby_public);
+        }
+    }
+
     run_every_runcb = new RunEveryRunCB();
 
     PRINT_DEBUG(

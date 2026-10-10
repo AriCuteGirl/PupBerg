@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <random>
 #include <ctime>
 
 using namespace pupberg;
@@ -69,6 +70,11 @@ PupOverlay::PupOverlay(Steam_Overlay &overlay) :
     std::strncpy(zt_network_input, pup.zerotier_network.c_str(), sizeof(zt_network_input) - 1);
     custom_theme = find_builtin_theme(theme_name);
     custom_theme.name = CUSTOM_THEME_NAME;
+    server_mode = pup.server_mode;
+    std::strncpy(lobby_server_input, pup.lobby_server.c_str(), sizeof(lobby_server_input) - 1);
+    std::strncpy(lobby_room_input, pup.lobby_room.c_str(), sizeof(lobby_room_input) - 1);
+    lobby_public = pup.lobby_public;
+    lobby_auto_join = pup.lobby_auto_join;
 
     load_prefs();
     select_theme(theme_name);
@@ -90,6 +96,13 @@ PupOverlay::PupOverlay(Steam_Overlay &overlay) :
     if (zt_auto_join && ZeroTierClient::valid_network_id(zt_network_input)) {
         zt->join(zt_network_input);
         zt_auto_join_done = true;
+    }
+
+    // the prefs saved by this overlay win over configs.overlay.ini (Steam_Client already joined from that)
+    if (server_mode && lobby_auto_join && valid_room_code(lobby_room_input)) {
+        join_room(lobby_room_input);
+    } else if (!server_mode) {
+        ov.network->relay_leave();
     }
 }
 
@@ -129,6 +142,15 @@ void PupOverlay::load_prefs()
         std::string net = j.value("zerotier_network", std::string(zt_network_input));
         std::memset(zt_network_input, 0, sizeof(zt_network_input));
         std::strncpy(zt_network_input, net.c_str(), sizeof(zt_network_input) - 1);
+        server_mode = j.value("network_mode", std::string(server_mode ? "server" : "zerotier")) == "server";
+        std::string server = j.value("lobby_server", std::string(lobby_server_input));
+        std::memset(lobby_server_input, 0, sizeof(lobby_server_input));
+        std::strncpy(lobby_server_input, server.c_str(), sizeof(lobby_server_input) - 1);
+        std::string room = j.value("lobby_room", std::string(lobby_room_input));
+        std::memset(lobby_room_input, 0, sizeof(lobby_room_input));
+        std::strncpy(lobby_room_input, room.c_str(), sizeof(lobby_room_input) - 1);
+        lobby_public = j.value("lobby_public", lobby_public);
+        lobby_auto_join = j.value("lobby_auto_join", lobby_auto_join);
         if (j.contains("peers") && j["peers"].is_array()) {
             peer_ips.clear();
             for (const auto &p : j["peers"]) if (p.is_string()) peer_ips.push_back(p.get<std::string>());
@@ -162,6 +184,11 @@ void PupOverlay::save_prefs()
     j["zerotier_network"] = std::string(zt_network_input);
     j["zerotier_auto_join"] = zt_auto_join;
     j["peers"] = peer_ips;
+    j["network_mode"] = server_mode ? "server" : "zerotier";
+    j["lobby_server"] = std::string(lobby_server_input);
+    j["lobby_room"] = std::string(lobby_room_input);
+    j["lobby_public"] = lobby_public;
+    j["lobby_auto_join"] = lobby_auto_join;
     j["custom_theme"] = {
         { "dark", custom_theme.dark },
         { "backdrop", color_to_json(custom_theme.backdrop) },
@@ -304,7 +331,7 @@ void PupOverlay::render()
         ImGui::PopStyleVar();
 
         // page header with a close button on the right
-        static const char *titles[] = { "Home", "Friends", "Achievements", "Network", "Gallery", "Settings" };
+        static const char *titles[] = { "Home", "Friends", "Network", "Gallery", "Settings" };
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, open_t * page_t);
         ImVec2 header_pos = ImGui::GetCursorScreenPos();
         ui::heading(titles[(int)page], 1.7f);
@@ -330,7 +357,6 @@ void PupOverlay::render()
         switch (page) {
         case Page::Home: render_home(); break;
         case Page::Friends: render_friends(); break;
-        case Page::Achievements: render_achievements(); break;
         case Page::Network: render_network(); break;
         case Page::Gallery: render_gallery(); break;
         case Page::Settings: render_settings(); break;
@@ -378,7 +404,6 @@ void PupOverlay::render_sidebar(float width, float height)
     static const NavEntry entries[] = {
         { "Home##nav", Icon::Home, Page::Home },
         { "Friends##nav", Icon::Friends, Page::Friends },
-        { "Achievements##nav", Icon::Trophy, Page::Achievements },
         { "Network##nav", Icon::Network, Page::Network },
         { "Gallery##nav", Icon::Camera, Page::Gallery },
         { "Settings##nav", Icon::Gear, Page::Settings },
@@ -473,15 +498,21 @@ void PupOverlay::render_home()
         ui::spacer(2.0f);
         ui::chip(ov.i_have_lobby ? "In a lobby" : "No lobby", ov.i_have_lobby ? theme.success : theme.text_muted);
         ImGui::SameLine();
-        ui::chip(zt_ip.empty() ? "ZeroTier off" : ("ZeroTier " + zt_ip).c_str(), zt_ip.empty() ? theme.text_muted : theme.success);
+        if (server_mode) {
+            auto rs = ov.network->relay_status();
+            bool connected = rs.state == Relay_Status::State::Connected;
+            ui::chip(connected ? ("Room " + rs.room).c_str() : (rs.state == Relay_Status::State::Connecting ? "Joining room..." : "Online: no room"),
+                     connected ? theme.success : theme.text_muted);
+        } else {
+            ui::chip(zt_ip.empty() ? "ZeroTier off" : ("ZeroTier " + zt_ip).c_str(), zt_ip.empty() ? theme.text_muted : theme.success);
+        }
         ImGui::EndGroup();
     }
     ui::end_card();
     ui::spacer(14.0f);
 
     // stat tiles
-    size_t unlocked = std::count_if(ov.achievements.begin(), ov.achievements.end(), [](const Overlay_Achievement &a) { return a.achieved; });
-    const float tile_w = (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f;
+    const float tile_w = (ImGui::GetContentRegionAvail().x - gap) / 2.0f;
     auto tile_header = [&](Icon icon, const char *label) {
         ImVec2 c = ImGui::GetCursorScreenPos();
         float sz = ImGui::GetFontSize() * 1.9f;
@@ -491,17 +522,6 @@ void PupOverlay::render_home()
         dl->AddText(ImVec2(c.x + sz + S(10.0f), c.y + (sz - ImGui::GetFontSize()) * 0.5f), to_u32(theme.text_muted), label);
         ImGui::Dummy(ImVec2(sz, sz));
     };
-
-    ui::begin_card("##tile_ach", tile_w, true);
-    tile_header(Icon::Trophy, "Achievements");
-    {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%zu / %zu", unlocked, ov.achievements.size());
-        ui::heading(buf, 1.4f);
-        ui::bone_progress(ov.achievements.empty() ? 0.0f : (float)unlocked / (float)ov.achievements.size(), ImVec2(-1, S(10.0f)));
-    }
-    if (ui::end_card()) set_page(Page::Achievements);
-    ImGui::SameLine(0.0f, gap);
 
     ui::begin_card("##tile_friends", tile_w, true);
     tile_header(Icon::Friends, "Friends online");
@@ -515,10 +535,19 @@ void PupOverlay::render_home()
     ImGui::SameLine(0.0f, gap);
 
     ui::begin_card("##tile_net", tile_w, true);
-    tile_header(Icon::Network, "ZeroTier");
-    ui::heading(zt_ip.empty() ? "Offline" : zt_ip.c_str(), 1.4f);
-    ui::text_muted(!zt_state.token_found ? "Needs the auth token" :
-                   !zt_state.service_online ? "Service not running" : (zt_ip.empty() ? "Join a network" : "Connected"));
+    if (server_mode) {
+        auto rs = ov.network->relay_status();
+        tile_header(Icon::Network, "Online room");
+        bool connected = rs.state == Relay_Status::State::Connected;
+        ui::heading(connected ? rs.room.c_str() : "No room", 1.4f);
+        if (connected) ui::text_muted("%zu %s with you", rs.members.size(), rs.members.size() == 1 ? "friend" : "friends");
+        else ui::text_muted(rs.state == Relay_Status::State::Error ? rs.error.c_str() : "Create or join a room");
+    } else {
+        tile_header(Icon::Network, "ZeroTier");
+        ui::heading(zt_ip.empty() ? "Offline" : zt_ip.c_str(), 1.4f);
+        ui::text_muted(!zt_state.token_found ? "Needs the auth token" :
+                       !zt_state.service_online ? "Service not running" : (zt_ip.empty() ? "Join a network" : "Connected"));
+    }
     if (ui::end_card()) set_page(Page::Network);
     ui::spacer(14.0f);
 
@@ -538,10 +567,6 @@ void PupOverlay::render_home()
         if (ui::button("Copy my ID##qa_id", ImVec2(0, 0), ButtonKind::Soft, Icon::Copy)) {
             ImGui::SetClipboardText(std::to_string(ov.settings->get_local_steam_id().ConvertToUint64()).c_str());
         }
-        ImGui::SameLine();
-    }
-    if (ov.settings->overlay_show_button_test_achievement) {
-        if (ui::button("Test achievement##qa_test", ImVec2(0, 0), ButtonKind::Soft, Icon::Trophy)) ov.show_test_achievement();
         ImGui::SameLine();
     }
     ImGui::NewLine();
@@ -619,7 +644,7 @@ void PupOverlay::render_friends()
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (w - ImGui::CalcTextSize(t1).x * 1.2f) * 0.5f);
         ui::heading(t1, 1.2f);
         ui::text_muted("Friends running PupBerg on the same LAN show up here automatically. Playing over the internet? "
-                       "Join the same ZeroTier network in the Network tab and they'll pop up in a few seconds.");
+                       "Join the same online room (Public Server) or ZeroTier network in the Network tab and they'll pop up in a few seconds.");
         ui::spacer(6.0f);
         if (ui::button("Open Network##fr_go_net", ImVec2(0, 0), ButtonKind::Primary, Icon::Network)) set_page(Page::Network);
         ui::end_card();
@@ -694,146 +719,6 @@ void PupOverlay::render_friends()
 }
 
 // ---------------------------------------------------------------------------
-// Achievements
-
-void PupOverlay::render_achievements()
-{
-    auto &achs = ov.achievements;
-    size_t unlocked = std::count_if(achs.begin(), achs.end(), [](const Overlay_Achievement &a) { return a.achieved; });
-
-    if (achs.empty()) {
-        ui::begin_card("##no_ach");
-        ui::heading("No achievements here", 1.2f);
-        ui::text_muted("This game has no achievements, or steam_settings/achievements.json is missing.");
-        ui::end_card();
-        return;
-    }
-
-    ui::begin_card("##ach_summary");
-    {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "%zu of %zu unlocked", unlocked, achs.size());
-        ImGui::TextUnformatted(buf);
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + S(6.0f));
-        ImGui::TextColored(theme.accent, "%d%%", (int)std::round(100.0f * unlocked / achs.size()));
-        ui::bone_progress((float)unlocked / achs.size(), ImVec2(-1, S(14.0f)));
-    }
-    ui::end_card();
-    ui::spacer(12.0f);
-
-    static const char *filters[] = { "All", "Unlocked", "Locked" };
-    ui::segmented("##ach_filter", filters, 3, &ach_filter);
-    ImGui::SameLine(0.0f, S(14.0f));
-    ImGui::PushItemWidth(std::min(S(320.0f), ImGui::GetContentRegionAvail().x));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(3.0f));
-    ImGui::InputTextWithHint("##ach_search", "Search achievements...", ach_search, sizeof(ach_search));
-    ImGui::PopItemWidth();
-    ui::spacer(10.0f);
-
-    // unlocked first (newest first), then locked by rarity
-    std::vector<size_t> order{};
-    for (size_t i = 0; i < achs.size(); ++i) {
-        const auto &a = achs[i];
-        if (ach_filter == 1 && !a.achieved) continue;
-        if (ach_filter == 2 && a.achieved) continue;
-        bool hidden = a.hidden && !a.achieved;
-        if (!contains_insensitive(a.title, ach_search) && (hidden || !contains_insensitive(a.description, ach_search))) continue;
-        order.push_back(i);
-    }
-    std::stable_sort(order.begin(), order.end(), [&](size_t l, size_t r) {
-        const auto &a = achs[l], &b = achs[r];
-        if (a.achieved != b.achieved) return a.achieved;
-        if (a.achieved) return a.unlock_time > b.unlock_time;
-        return a.unlock_percentage > b.unlock_percentage;
-    });
-
-    const float gap = S(12.0f);
-    const float avail = ImGui::GetContentRegionAvail().x;
-    int cols = std::max(1, (int)((avail + gap) / (S(330.0f) + gap)));
-    const float card_w = (avail - gap * (cols - 1)) / cols;
-    const float icon_sz = S(56.0f);
-
-    int col = 0;
-    for (size_t i : order) {
-        auto &x = achs[i];
-        const bool achieved = x.achieved;
-        const bool hidden = x.hidden && !achieved;
-
-        if (x.unlock_percentage < 0.0f && x.name.size()) {
-            x.unlock_percentage = static_cast<float>(get_steam_client()->steam_user_stats->GetAchievementUnlockPercentage(x.name.c_str()));
-        }
-        ov.try_load_ach_icon(x, achieved, ov.settings->paginated_achievements_icons == 0);
-
-        if (col > 0) ImGui::SameLine(0.0f, gap);
-        ImGui::PushID((int)i);
-        ui::begin_card("##ach_card", card_w);
-
-        ImVec2 ic = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(icon_sz, icon_sz));
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        auto *icon_rsrc = achieved ? x.icon : x.icon_gray;
-        uint64_t tex = icon_rsrc ? icon_rsrc->GetResourceId() : 0;
-        if (tex) {
-            dl->AddImageRounded((ImTextureID)tex, ic, ImVec2(ic.x + icon_sz, ic.y + icon_sz), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(12.0f));
-        } else {
-            dl->AddRectFilled(ic, ImVec2(ic.x + icon_sz, ic.y + icon_sz), to_u32(achieved ? theme.accent : theme.border, achieved ? 0.25f : 0.6f), S(12.0f));
-            ui::draw_icon(dl, achieved ? Icon::Trophy : Icon::Lock, ImVec2(ic.x + icon_sz * 0.5f, ic.y + icon_sz * 0.5f), icon_sz * 0.5f,
-                          to_u32(achieved ? theme.accent : theme.text_muted));
-        }
-        if (achieved) {
-            // rare achievements get a golden ring
-            bool rare = x.unlock_percentage >= 0.0f && x.unlock_percentage <= 10.0f;
-            dl->AddRect(ImVec2(ic.x - 1, ic.y - 1), ImVec2(ic.x + icon_sz + 1, ic.y + icon_sz + 1),
-                        rare ? IM_COL32(255, 205, 80, 255) : to_u32(theme.accent, 0.7f), S(12.0f), 0, rare ? S(3.0f) : S(1.5f));
-        }
-
-        ImGui::SameLine(0.0f, S(12.0f));
-        ImGui::BeginGroup();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + (ui::card_inner_right() - ImGui::GetCursorScreenPos().x));
-        ImGui::TextUnformatted(hidden ? "Hidden achievement" : x.title.c_str());
-        ui::text_muted("%s", hidden ? "Keep playing to sniff this one out." : x.description.c_str());
-        if (!achieved && x.max_progress > 0) {
-            char buf[48];
-            snprintf(buf, sizeof(buf), "%u / %u", x.progress, x.max_progress);
-            ui::bone_progress((float)x.progress / (float)x.max_progress, ImVec2(-1, S(9.0f)), buf);
-        }
-        if (achieved) {
-            char date[80]{};
-            time_t t = (time_t)x.unlock_time;
-            struct tm tm_buf{};
-#ifdef _MSC_VER
-            localtime_s(&tm_buf, &t);
-#else
-            localtime_r(&t, &tm_buf);
-#endif
-            if (!std::strftime(date, sizeof(date), ov.settings->overlay_appearance.ach_unlock_datetime_format.c_str(), &tm_buf)) {
-                std::strftime(date, sizeof(date), "%Y/%m/%d", &tm_buf);
-            }
-            ui::chip(date, theme.success);
-        } else {
-            ui::chip("Locked", theme.text_muted);
-        }
-        if (x.unlock_percentage >= 0.0f) {
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(3.0f));
-            ImGui::TextColored(theme.text_muted, "%.1f%% of players", std::max(0.1f, x.unlock_percentage));
-        }
-        ImGui::PopTextWrapPos();
-        ImGui::EndGroup();
-
-        ui::end_card();
-        ImGui::PopID();
-
-        if (++col >= cols) {
-            col = 0;
-            ui::spacer(gap / ui::ctx().scale - 8.0f);
-        }
-    }
-    if (order.empty()) ui::text_muted("Nothing matches this filter.");
-}
-
-// ---------------------------------------------------------------------------
 // Network (ZeroTier)
 
 static void status_chip(const std::string &status, const Theme &t)
@@ -846,6 +731,210 @@ static void status_chip(const std::string &status, const Theme &t)
 }
 
 void PupOverlay::render_network()
+{
+    // how friends are found over the internet, LAN always works on top of either
+    static const char *modes[] = { "ZeroTier", "Public Server" };
+    int mode = server_mode ? 1 : 0;
+    if (ui::segmented("##net_mode", modes, 2, &mode)) set_network_mode(mode == 1);
+    ui::text_muted(server_mode ? "Play over the internet with a room code through the PupBerg lobby server, no VPN needed."
+                               : "Play over a ZeroTier network, everyone installs ZeroTier One.");
+    ui::spacer(12.0f);
+
+    if (server_mode) render_lobby_server();
+    else render_zerotier();
+}
+
+void PupOverlay::set_network_mode(bool server)
+{
+    if (server == server_mode) return;
+    server_mode = server;
+    if (!server_mode) ov.network->relay_leave();
+    else lobby_rooms_requested = false; // refresh the public room list
+    save_prefs();
+}
+
+bool PupOverlay::valid_room_code(const std::string &code)
+{
+    if (code.size() < 4 || code.size() > 32) return false;
+    return std::all_of(code.begin(), code.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; });
+}
+
+std::string PupOverlay::random_room_code()
+{
+    // no 0/O/1/I so codes are easy to read out loud
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    std::random_device rd;
+    std::uniform_int_distribution<int> dist(0, (int)sizeof(alphabet) - 2);
+    std::string code = "PUP-";
+    for (int i = 0; i < 5; ++i) code.push_back(alphabet[dist(rd)]);
+    return code;
+}
+
+void PupOverlay::join_room(const std::string &code)
+{
+    std::string room(code);
+    std::transform(room.begin(), room.end(), room.begin(), [](unsigned char c) { return (char)std::toupper(c); });
+    std::memset(lobby_room_input, 0, sizeof(lobby_room_input));
+    std::strncpy(lobby_room_input, room.c_str(), sizeof(lobby_room_input) - 1);
+    ov.network->relay_join(lobby_server_input, room, ov.settings->get_local_name(), lobby_public);
+}
+
+void PupOverlay::render_lobby_server()
+{
+    auto st = ov.network->relay_status();
+    const uint32 appid = ov.settings->get_local_game_id().AppID();
+    using State = Relay_Status::State;
+    bool in_room = st.state == State::Connected || st.state == State::Connecting;
+
+    if (!lobby_rooms_requested) {
+        ov.network->relay_request_rooms(lobby_server_input, appid);
+        lobby_rooms_requested = true;
+    }
+
+    // status + current room
+    ui::begin_card("##lobby_status");
+    {
+        ImGui::TextUnformatted("Lobby server");
+        ImGui::SameLine(0.0f, S(12.0f));
+        switch (st.state) {
+        case State::Off: ui::chip("Not in a room", theme.text_muted); break;
+        case State::Connecting: ui::chip("Connecting...", theme.warning); break;
+        case State::Connected: ui::chip("Connected", theme.success); break;
+        case State::Error: ui::chip("Error", theme.danger); break;
+        }
+        if (in_room) {
+            ImGui::SameLine();
+            ui::chip(st.is_public ? "Public" : "Private", st.is_public ? theme.accent : theme.accent2);
+        }
+        if (!st.error.empty()) ImGui::TextColored(theme.danger, "%s", st.error.c_str());
+
+        if (in_room) {
+            ui::spacer(6.0f);
+            ui::text_muted("Room code");
+            ui::heading(st.room.c_str(), 1.5f);
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(6.0f));
+            if (ui::button("Copy code##lobby_copy", ImVec2(0, 0), ButtonKind::Soft, Icon::Copy)) ImGui::SetClipboardText(st.room.c_str());
+            ImGui::SameLine();
+            if (ui::button("Leave##lobby_leave", ImVec2(0, 0), ButtonKind::Danger)) {
+                ov.network->relay_leave();
+                lobby_rooms_requested = false;
+            }
+
+            ui::spacer(6.0f);
+            if (st.members.empty()) {
+                ui::text_muted(st.state == State::Connected ? "Nobody else here yet, send your friends the room code!" : "Joining the room...");
+            }
+            for (const auto &m : st.members) {
+                ImGui::PushID((int)(m.id & 0x7FFFFFFF));
+                ImVec2 c = ImGui::GetCursorScreenPos();
+                float r = ImGui::GetFontSize() * 0.75f;
+                ui::draw_avatar(ImGui::GetWindowDrawList(), ImVec2(c.x + r, c.y + r), r, m.name, true);
+                ImGui::Dummy(ImVec2(r * 2.0f, r * 2.0f));
+                ImGui::SameLine();
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (r * 2.0f - ImGui::GetFontSize()) * 0.5f);
+                ImGui::TextUnformatted(m.name.empty() ? "(no name)" : m.name.c_str());
+                if (m.appid != appid) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(theme.text_muted, "playing another game (%u)", m.appid);
+                }
+                ImGui::PopID();
+            }
+        }
+    }
+    ui::end_card();
+    ui::spacer(12.0f);
+
+    // create / join
+    ui::begin_card("##lobby_join");
+    {
+        ImGui::TextUnformatted("Create a room");
+        ui::text_muted("Private rooms can only be joined with the code. Public rooms also show up below for everyone playing this game.");
+        ui::spacer(4.0f);
+        static const char *vis[] = { "Private", "Public" };
+        int v = lobby_public ? 1 : 0;
+        if (ui::segmented("##lobby_vis", vis, 2, &v)) {
+            lobby_public = v == 1;
+            save_prefs();
+        }
+        ImGui::SameLine(0.0f, S(16.0f));
+        if (ui::button("Create room##lobby_create", ImVec2(0, 0), ButtonKind::Primary, Icon::Plus)) {
+            join_room(random_room_code());
+            save_prefs();
+        }
+
+        ui::spacer(10.0f);
+        ImGui::TextUnformatted("Join with a code");
+        ImGui::PushItemWidth(S(220.0f));
+        bool enter = ImGui::InputTextWithHint("##lobby_code", "PUP-XXXXX", lobby_room_input, sizeof(lobby_room_input),
+                                              ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        bool valid = valid_room_code(lobby_room_input);
+        if (ui::button("Join##lobby_join_btn", ImVec2(0, 0), ButtonKind::Primary, Icon::Paw, valid) || (enter && valid)) {
+            join_room(lobby_room_input);
+            save_prefs();
+        }
+        ImGui::SameLine(0.0f, S(20.0f));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(4.0f));
+        if (ui::toggle("Rejoin when the game starts##lobby_auto", &lobby_auto_join)) save_prefs();
+    }
+    ui::end_card();
+    ui::spacer(12.0f);
+
+    // public rooms for this game
+    ui::begin_card("##lobby_rooms");
+    {
+        ImGui::TextUnformatted("Public rooms");
+        ImGui::SameLine();
+        float rx = ui::card_inner_right() - S(110.0f);
+        ImGui::SetCursorScreenPos(ImVec2(rx, ImGui::GetCursorScreenPos().y));
+        if (ui::button(st.rooms_loading ? "Loading...##lobby_ref" : "Refresh##lobby_ref", ImVec2(S(110.0f), 0), ButtonKind::Ghost, Icon::None, !st.rooms_loading)) {
+            ov.network->relay_request_rooms(lobby_server_input, appid);
+        }
+        size_t shown = 0;
+        for (const auto &r : st.rooms) {
+            if (r.code == st.room && in_room) continue;
+            ImGui::PushID(r.code.c_str());
+            ui::spacer(4.0f);
+            ImVec2 row = ImGui::GetCursorScreenPos();
+            ImGui::BeginGroup();
+            ImGui::TextUnformatted(r.code.c_str());
+            ImGui::TextColored(theme.text_muted, "hosted by %s  -  %u %s", r.host.c_str(), r.members, r.members == 1 ? "player" : "players");
+            ImGui::EndGroup();
+            float bottom = ImGui::GetItemRectMax().y;
+            float bw = S(90.0f);
+            ImGui::SetCursorScreenPos(ImVec2(ui::card_inner_right() - bw, row.y));
+            if (ui::button("Join##room_join", ImVec2(bw, 0), ButtonKind::Primary)) {
+                join_room(r.code);
+                save_prefs();
+            }
+            ImGui::SetCursorScreenPos(ImVec2(row.x, std::max(bottom, ImGui::GetItemRectMax().y) + S(4.0f)));
+            ImGui::PopID();
+            ++shown;
+        }
+        if (!shown) ui::text_muted(st.rooms_loading ? "Looking for rooms..." : "No public rooms for this game right now. Create one!");
+    }
+    ui::end_card();
+    ui::spacer(12.0f);
+
+    // server address
+    ui::begin_card("##lobby_server");
+    {
+        ImGui::TextUnformatted("Server");
+        ui::text_muted("Everyone has to use the same lobby server. The default one is run by PupBerg.");
+        ImGui::PushItemWidth(S(300.0f));
+        ImGui::InputTextWithHint("##lobby_srv", "host:port", lobby_server_input, sizeof(lobby_server_input));
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_prefs();
+            lobby_rooms_requested = false;
+        }
+        ImGui::PopItemWidth();
+    }
+    ui::end_card();
+}
+
+void PupOverlay::render_zerotier()
 {
     auto st = zt->snapshot();
 

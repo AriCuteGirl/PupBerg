@@ -69,6 +69,23 @@ jobs:
         working-directory: "${{ github.workspace }}"
         run: package_win.bat vs2026\debug 1
 
+      # PupBerg: small download with just what players need
+      - name: "Package PupBerg simple (Windows)"
+        shell: "pwsh"
+        working-directory: "${{ github.workspace }}"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = "build/win/vs2026/release"
+          $dst = "build/pupberg-simple/PupBerg-Windows"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Recurse -Force post_build/pupberg_simple/* $dst
+          Copy-Item "$src/experimental/x64/steam_api64.dll" $dst
+          Copy-Item "$src/experimental/x86/steam_api.dll" $dst
+          Copy-Item "$src/tools/account_picker/account_picker_x64.exe" $dst
+          Copy-Item tools/account_picker/account_picker.sh $dst
+          New-Item -ItemType Directory -Force -Path build/package/win | Out-Null
+          Compress-Archive -Force -Path $dst -DestinationPath build/package/win/PupBerg-Windows.zip
+
       # Rename
       - name: "Rename"
         if: startsWith(github.ref, 'refs/tags/')
@@ -167,6 +184,24 @@ jobs:
         shell: "bash"
         working-directory: "${{ github.workspace }}"
         run: ./package_linux.sh gmake/debug 1
+
+      # PupBerg: small download with just what players need
+      - name: "Package PupBerg simple (Linux)"
+        shell: "bash"
+        working-directory: "${{ github.workspace }}"
+        run: |
+          set -e
+          src="build/linux/gmake/release"
+          dst="build/pupberg-simple/PupBerg-Linux"
+          mkdir -p "$dst/x64" "$dst/x86"
+          cp -r post_build/pupberg_simple/. "$dst/"
+          cp "$src/experimental/x64/libsteam_api.so" "$dst/x64/"
+          cp "$src/experimental/x86/libsteam_api.so" "$dst/x86/"
+          cp tools/account_picker/account_picker.sh "$dst/"
+          cp "$src/tools/account_picker/account_picker_x64" "$dst/" || true
+          chmod +x "$dst/account_picker.sh"
+          mkdir -p build/package/linux
+          tar -C build/pupberg-simple -czf build/package/linux/PupBerg-Linux.tar.gz PupBerg-Linux
 
       # release (debug + release modes) if this is a tag push
       - name: "Release"

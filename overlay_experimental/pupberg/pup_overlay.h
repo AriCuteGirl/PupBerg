@@ -32,7 +32,7 @@ public:
     void render_classic_switch();
 
 private:
-    enum class Page { Home, Friends, Achievements, Network, Gallery, Settings };
+    enum class Page { Home, Friends, Network, Gallery, Settings };
 
     Steam_Overlay &ov;
 
@@ -48,13 +48,19 @@ private:
     float scale = 1.0f; // ui_scale * resolution factor, valid during render()
 
     char friend_search[128]{};
-    char ach_search[128]{};
-    int ach_filter = 0;
     char zt_network_input[32]{};
     char peer_ip_input[64]{};
     bool zt_auto_join = false;
     bool zt_auto_join_done = false;
     std::vector<std::string> peer_ips{};
+
+    // online lobby server (room codes, no VPN), the other way to find friends besides ZeroTier
+    bool server_mode = false;
+    char lobby_server_input[128]{};
+    char lobby_room_input[40]{};
+    bool lobby_public = false;
+    bool lobby_auto_join = false;
+    bool lobby_rooms_requested = false;
 
     std::unique_ptr<pupberg::ZeroTierClient> zt{};
     std::unique_ptr<pupberg::InputFallback> input{};
@@ -71,8 +77,13 @@ private:
     void render_banners();
     void render_home();
     void render_friends();
-    void render_achievements();
     void render_network();
+    void render_zerotier();
+    void render_lobby_server();
+    void set_network_mode(bool server);
+    void join_room(const std::string &code);
+    static bool valid_room_code(const std::string &code);
+    static std::string random_room_code();
     void render_gallery();
     void render_settings();
     void render_side_windows();

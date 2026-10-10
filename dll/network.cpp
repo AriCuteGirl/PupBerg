@@ -659,6 +659,11 @@ bool Networking::handle_announce(Common_Message *msg, IP_PORT ip_port)
         PRINT_DEBUG("new connection created: user %llu, appid %u", (uint64)msg->source_id(), msg->announce().appid());
     }
 
+    if (conn->relayed) {
+        // PupBerg: already talking to this friend through the lobby server
+        return true;
+    }
+
     PRINT_DEBUG("Handle Announce: %u, " "%" PRIu64 ", %u, %u", conn->appid, msg->source_id(), msg->announce().appid(), msg->announce().type());
     conn->tcp_ip_port = ip_port;
     conn->tcp_ip_port.port = htons(msg->announce().tcp_port());
@@ -854,6 +859,7 @@ Networking::~Networking()
 
     kill_socket(udp_socket);
     kill_socket(tcp_socket);
+    if (is_socket_valid(relay.sock)) kill_socket(relay.sock);
 
     curl_global_cleanup();
 }
@@ -937,6 +943,8 @@ void Networking::Run()
     if (!enabled || ids.size() == 0) {
         return;
     }
+
+    relay_run();
 
     //PRINT_DEBUG("%lf", time_extra);
     // PRINT_DEBUG_ENTRY();
@@ -1068,6 +1076,7 @@ void Networking::Run()
 
     // PRINT_DEBUG("CONNECTIONS %zu", connections.size());
     for (auto &conn: connections) {
+        if (conn.relayed) continue; // PupBerg: no direct sockets, everything goes through the lobby server
         if (!is_tcp_socket_valid(conn.tcp_socket_outgoing)) {
             sock = static_cast<sock_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
             if (is_socket_valid(sock) && set_socket_nonblocking(sock)) {
@@ -1152,6 +1161,7 @@ void Networking::Run()
     }
 
     for (auto &conn: connections) {
+        if (conn.relayed) continue;
         if (!(conn.tcp_socket_incoming.received_data || conn.tcp_socket_outgoing.received_data)) {
             if (conn.connected) for (auto &steam_id : conn.ids) run_callback_user(steam_id, false, conn.appid);
             conn.connected = false;
@@ -1240,7 +1250,9 @@ bool Networking::sendTo(Common_Message *msg, bool reliable, Connection *conn)
         conn = find_connection(dest_id, this->appid);
     }
 
-    if (!ret && conn) {
+    if (!ret && conn && conn->relayed) {
+        ret = relay_send_message(dest_id.ConvertToUint64(), msg);
+    } else if (!ret && conn) {
         if (reliable || !conn->udp_pinged) {
             if (conn->tcp_socket_incoming.received_data) {
                 send_buffer_tcp(conn->tcp_socket_incoming, msg);
@@ -1436,4 +1448,558 @@ void Networking::shutDownQuery()
 bool Networking::isQueryAlive()
 {
     return query_alive;
+}
+
+
+// ---------------------------------------------------------------------------
+// PupBerg lobby server relay
+// one TCP connection to the lobby server (tools/lobby_server/pupberg_lobby.py), room members
+// become "relayed" connections and every message to them goes through the server
+
+#define RELAY_PROTOCOL_VERSION 1
+#define RELAY_DEFAULT_PORT 47620
+#define RELAY_MAX_FRAME (1024 * 1024)
+#define RELAY_CONNECT_TIMEOUT 10.0
+#define RELAY_PING_INTERVAL 10.0
+#define RELAY_IDLE_TIMEOUT 35.0
+#define RELAY_RETRY_DELAY 5.0
+
+enum Relay_Frame : uint8 {
+    RELAY_HELLO = 0x01, RELAY_DATA = 0x02, RELAY_PING = 0x03, RELAY_LIST = 0x04,
+    RELAY_WELCOME = 0x81, RELAY_JOIN = 0x82, RELAY_LEAVE = 0x83, RELAY_RDATA = 0x84,
+    RELAY_PONG = 0x85, RELAY_ERROR = 0x86, RELAY_ROOMS = 0x87,
+};
+
+static bool relay_would_block()
+{
+#if defined(STEAM_WIN32)
+    int err = WSAGetLastError();
+    return err == WSAEWOULDBLOCK || err == WSAEINPROGRESS || err == WSAEALREADY || err == WSAENOTCONN;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS || errno == EALREADY || errno == ENOTCONN;
+#endif
+}
+
+static void relay_put_u16(std::string &s, uint16 v) { s.push_back((char)(v & 0xFF)); s.push_back((char)(v >> 8)); }
+static void relay_put_u32(std::string &s, uint32 v) { for (int i = 0; i < 4; ++i) s.push_back((char)((v >> (8 * i)) & 0xFF)); }
+static void relay_put_u64(std::string &s, uint64 v) { for (int i = 0; i < 8; ++i) s.push_back((char)((v >> (8 * i)) & 0xFF)); }
+static void relay_put_str(std::string &s, const std::string &v)
+{
+    size_t n = std::min<size_t>(v.size(), 255);
+    s.push_back((char)n);
+    s.append(v, 0, n);
+}
+
+static uint32 relay_get_u32(const char *p)
+{
+    uint32 v = 0;
+    for (int i = 3; i >= 0; --i) v = (v << 8) | (uint8)p[i];
+    return v;
+}
+
+static uint64 relay_get_u64(const char *p)
+{
+    uint64 v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | (uint8)p[i];
+    return v;
+}
+
+static bool relay_get_str(const char *data, size_t len, size_t &off, std::string &out)
+{
+    if (off >= len) return false;
+    size_t n = (uint8)data[off++];
+    if (off + n > len) return false;
+    out.assign(data + off, n);
+    off += n;
+    return true;
+}
+
+static bool relay_parse_server(const std::string &server, std::string &host, uint16 &port)
+{
+    std::string s(common_helpers::string_strip(server));
+    port = RELAY_DEFAULT_PORT;
+    auto colon = s.rfind(':');
+    if (colon != std::string::npos) {
+        try {
+            unsigned long p = std::stoul(s.substr(colon + 1));
+            if (p == 0 || p > 65535) return false;
+            port = static_cast<uint16>(p);
+        } catch (...) {
+            return false;
+        }
+        s.erase(colon);
+    }
+    host = s;
+    return !host.empty();
+}
+
+uint32 Networking::relay_virtual_ip(uint64 steam_id)
+{
+    // stable fake address per friend inside 198.18.0.0/15 (reserved for benchmarking, never routed)
+    // so game code that tracks peers by ip (game servers, lobbies) still works
+    uint32 h = static_cast<uint32>(steam_id ^ (steam_id >> 32)) * 2654435761u;
+    uint32 ip = 0xC6120000u | (h & 0x1FFFFu);
+    if ((ip & 0xFF) == 0 || (ip & 0xFF) == 0xFF) ip ^= 0x01;
+    return ip;
+}
+
+void Networking::relay_join(const std::string &server, const std::string &room, const std::string &name, bool is_public)
+{
+    std::lock_guard lock(relay_mutex);
+    relay_cmd.join = true;
+    relay_cmd.leave = false;
+    relay_cmd.server = server;
+    relay_cmd.room = room;
+    relay_cmd.name = name;
+    relay_cmd.is_public = is_public;
+    relay_state.state = Relay_Status::State::Connecting;
+    relay_state.server = server;
+    relay_state.room = room;
+    relay_state.is_public = is_public;
+    relay_state.error.clear();
+}
+
+void Networking::relay_leave()
+{
+    std::lock_guard lock(relay_mutex);
+    relay_cmd.leave = true;
+    relay_cmd.join = false;
+    relay_state.state = Relay_Status::State::Off;
+    relay_state.room.clear();
+    relay_state.members.clear();
+    relay_state.error.clear();
+}
+
+void Networking::relay_request_rooms(const std::string &server, uint32 appid)
+{
+    std::lock_guard lock(relay_mutex);
+    relay_cmd.list = true;
+    relay_cmd.list_appid = appid;
+    if (!relay_cmd.join && relay_state.state == Relay_Status::State::Off) relay_cmd.server = server;
+    relay_state.rooms_loading = true;
+}
+
+Relay_Status Networking::relay_status()
+{
+    std::lock_guard lock(relay_mutex);
+    return relay_state;
+}
+
+void Networking::relay_publish_state(Relay_Status::State state, const std::string &error)
+{
+    std::lock_guard lock(relay_mutex);
+    // a newer command from the UI wins over what the network thread reports
+    if (relay_cmd.join || relay_cmd.leave) return;
+    relay_state.state = state;
+    relay_state.error = error;
+    relay_state.members = relay.members;
+}
+
+bool Networking::relay_open()
+{
+    run_at_startup();
+    IP_PORT addr{};
+    addr.port = htons(relay.port);
+
+    struct in_addr in4{};
+    if (inet_pton(AF_INET, relay.host.c_str(), &in4) == 1) {
+        addr.ip = in4.s_addr;
+    } else {
+        // blocking lookup, only done when connecting to a server given as a hostname
+        struct addrinfo hints{}, *res = nullptr;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(relay.host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
+        addr.ip = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
+        freeaddrinfo(res);
+    }
+
+    sock_t sock = static_cast<sock_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+    if (!is_socket_valid(sock)) return false;
+    if (!set_socket_nonblocking(sock)) {
+        kill_socket(sock);
+        return false;
+    }
+    disable_nagle(sock);
+    connect_socket(sock, addr);
+
+    relay.sock = sock;
+    relay.recv_buffer.clear();
+    relay.send_buffer.clear();
+    relay.welcomed = false;
+    relay.joined = false;
+    relay.opened = relay.last_received = relay.last_ping = std::chrono::high_resolution_clock::now();
+    PRINT_DEBUG("PupBerg relay connecting to %s:%u", relay.host.c_str(), relay.port);
+    return true;
+}
+
+void Networking::relay_drop_members()
+{
+    for (auto &m : relay.members) {
+        auto conn = std::find_if(connections.begin(), connections.end(), [&m](const Connection &c) {
+            return c.relayed && std::find(c.ids.begin(), c.ids.end(), CSteamID((uint64)m.id)) != c.ids.end();
+        });
+        if (conn != connections.end()) {
+            if (conn->connected) for (auto &steam_id : conn->ids) run_callback_user(steam_id, false, conn->appid);
+            connections.erase(conn);
+        }
+    }
+    relay.members.clear();
+}
+
+void Networking::relay_close(const std::string &error, bool keep_room)
+{
+    if (is_socket_valid(relay.sock)) kill_socket(relay.sock);
+    relay.sock = static_cast<sock_t>(~0);
+    relay.recv_buffer.clear();
+    relay.send_buffer.clear();
+    relay.welcomed = false;
+    relay.joined = false;
+    relay_drop_members();
+
+    if (!keep_room) relay.want_room = false;
+    if (relay.want_room) {
+        relay.retry_at = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds((int)(RELAY_RETRY_DELAY * 1000));
+    }
+
+    if (relay.want_list) {
+        relay.want_list = false;
+        std::lock_guard lock(relay_mutex);
+        relay_state.rooms_loading = false;
+    }
+
+    if (error.size()) PRINT_DEBUG("PupBerg relay closed: %s", error.c_str());
+    if (relay.want_room) {
+        relay_publish_state(Relay_Status::State::Connecting, error);
+    } else {
+        relay_publish_state(error.empty() ? Relay_Status::State::Off : Relay_Status::State::Error, error);
+    }
+}
+
+void Networking::relay_queue_frame(uint8 type, const std::string &payload)
+{
+    uint32 len = static_cast<uint32>(payload.size() + 1);
+    size_t old = relay.send_buffer.size();
+    relay.send_buffer.resize(old + 5 + payload.size());
+    char *p = &relay.send_buffer[old];
+    for (int i = 0; i < 4; ++i) p[i] = (char)((len >> (8 * i)) & 0xFF);
+    p[4] = (char)type;
+    if (payload.size()) memcpy(p + 5, payload.data(), payload.size());
+}
+
+bool Networking::relay_send_message(uint64 dest, Common_Message *msg)
+{
+    if (!relay.welcomed) return false;
+    std::string payload;
+    relay_put_u64(payload, dest);
+    payload.append(msg->SerializeAsString());
+    relay_queue_frame(RELAY_DATA, payload);
+    // don't wait for the next Run(), games care about latency
+    relay_flush();
+    return true;
+}
+
+bool Networking::relay_flush()
+{
+    while (relay.send_buffer.size()) {
+        int n = send(relay.sock, relay.send_buffer.data(), static_cast<int>(std::min<size_t>(relay.send_buffer.size(), 1 << 20)), MSG_NOSIGNAL);
+        if (n > 0) {
+            relay.send_buffer.erase(relay.send_buffer.begin(), relay.send_buffer.begin() + n);
+            continue;
+        }
+        if (n < 0 && relay_would_block()) return true;
+        return false;
+    }
+    return true;
+}
+
+void Networking::relay_member_joined(const Relay_Member &member)
+{
+    auto existing = std::find_if(relay.members.begin(), relay.members.end(), [&member](const Relay_Member &m) { return m.id == member.id; });
+    if (existing != relay.members.end()) *existing = member;
+    else relay.members.push_back(member);
+
+    // only friends running the same game become connections, others are just shown in the room list
+    if (member.appid != this->appid) return;
+
+    CSteamID id((uint64)member.id);
+    Connection *conn = find_connection(id, member.appid);
+    if (conn && !conn->relayed) {
+        PRINT_DEBUG("PupBerg relay: %llu already reachable directly, not relaying", (uint64)member.id);
+        return;
+    }
+    if (!conn) conn = new_connection(id, member.appid);
+    if (!conn) return;
+
+    conn->relayed = true;
+    conn->appid = member.appid;
+    for (auto extra : member.extra_ids) add_id_connection(conn, CSteamID((uint64)extra));
+    conn->tcp_ip_port.ip = htonl(relay_virtual_ip(member.id));
+    conn->tcp_ip_port.port = htons(DEFAULT_PORT);
+    conn->udp_ip_port = conn->tcp_ip_port;
+    conn->last_received = std::chrono::high_resolution_clock::now();
+    if (!conn->connected) {
+        conn->connected = true;
+        for (auto &steam_id : conn->ids) run_callback_user(steam_id, true, conn->appid);
+    }
+    PRINT_DEBUG("PupBerg relay: member %llu '%s' joined", (uint64)member.id, member.name.c_str());
+}
+
+void Networking::relay_member_left(uint64 id)
+{
+    relay.members.erase(std::remove_if(relay.members.begin(), relay.members.end(), [id](const Relay_Member &m) { return m.id == id; }), relay.members.end());
+    auto conn = std::find_if(connections.begin(), connections.end(), [id](const Connection &c) {
+        return c.relayed && std::find(c.ids.begin(), c.ids.end(), CSteamID((uint64)id)) != c.ids.end();
+    });
+    if (conn != connections.end()) {
+        if (conn->connected) for (auto &steam_id : conn->ids) run_callback_user(steam_id, false, conn->appid);
+        connections.erase(conn);
+    }
+    PRINT_DEBUG("PupBerg relay: member %llu left", (uint64)id);
+}
+
+void Networking::relay_handle_frame(uint8 type, const char *data, size_t len)
+{
+    switch (type) {
+    case RELAY_WELCOME: {
+        relay.welcomed = true;
+        relay_publish_state(relay.joined ? Relay_Status::State::Connected : Relay_Status::State::Off, "");
+        break;
+    }
+
+    case RELAY_JOIN: {
+        if (len < 12) return;
+        Relay_Member m{};
+        m.id = relay_get_u64(data);
+        m.appid = relay_get_u32(data + 8);
+        size_t off = 12;
+        relay_get_str(data, len, off, m.name);
+        if (off < len) {
+            size_t n = (uint8)data[off++];
+            for (size_t i = 0; i < n && off + 8 <= len; ++i, off += 8) m.extra_ids.push_back(relay_get_u64(data + off));
+        }
+        relay_member_joined(m);
+        relay_publish_state(Relay_Status::State::Connected, "");
+        break;
+    }
+
+    case RELAY_LEAVE: {
+        if (len < 8) return;
+        relay_member_left(relay_get_u64(data));
+        relay_publish_state(Relay_Status::State::Connected, "");
+        break;
+    }
+
+    case RELAY_RDATA: {
+        if (len < 8) return;
+        uint64 src = relay_get_u64(data);
+        Connection *conn = find_connection(CSteamID((uint64)src), this->appid);
+        if (!conn || !conn->relayed) return;
+
+        Common_Message msg;
+        if (!msg.ParseFromArray(data + 8, static_cast<int>(len - 8))) return;
+        // the server already tells us who sent it, don't let a client pretend to be someone else
+        if (std::find(conn->ids.begin(), conn->ids.end(), CSteamID((uint64)msg.source_id())) == conn->ids.end()) return;
+        if (msg.has_announce() || msg.has_low_level()) return;
+
+        conn->last_received = std::chrono::high_resolution_clock::now();
+        msg.set_source_ip(ntohl(conn->tcp_ip_port.ip));
+        msg.set_source_port(DEFAULT_PORT);
+        do_callbacks_message(&msg);
+        break;
+    }
+
+    case RELAY_PONG:
+        break;
+
+    case RELAY_ERROR: {
+        std::string err;
+        size_t off = 0;
+        relay_get_str(data, len, off, err);
+        // the server refused us (bad room, full, old version), don't keep retrying
+        relay_close(err.empty() ? "server refused the connection" : err, false);
+        break;
+    }
+
+    case RELAY_ROOMS: {
+        if (len < 2) return;
+        uint32 count = (uint8)data[0] | ((uint8)data[1] << 8);
+        std::vector<Relay_Room_Info> rooms{};
+        size_t off = 2;
+        for (uint32 i = 0; i < count; ++i) {
+            Relay_Room_Info r{};
+            if (!relay_get_str(data, len, off, r.code) || !relay_get_str(data, len, off, r.host)) break;
+            if (off + 5 > len) break;
+            r.members = (uint8)data[off];
+            r.appid = relay_get_u32(data + off + 1);
+            off += 5;
+            rooms.push_back(r);
+        }
+        relay.want_list = false;
+        {
+            std::lock_guard lock(relay_mutex);
+            relay_state.rooms = std::move(rooms);
+            relay_state.rooms_loading = false;
+        }
+        // a browse-only connection is done
+        if (!relay.want_room) relay_close("", false);
+        break;
+    }
+    }
+}
+
+void Networking::relay_run()
+{
+    auto now = std::chrono::high_resolution_clock::now();
+
+    // apply commands from the UI
+    {
+        Relay_Command cmd{};
+        {
+            std::lock_guard lock(relay_mutex);
+            cmd = relay_cmd;
+            relay_cmd.join = relay_cmd.leave = relay_cmd.list = false;
+        }
+
+        if (cmd.leave) {
+            relay.want_room = false;
+            relay_close("", false);
+        }
+
+        if (cmd.join) {
+            std::string host;
+            uint16 port = 0;
+            if (!relay_parse_server(cmd.server, host, port)) {
+                relay_close("invalid server address", false);
+            } else {
+                // reconnect from scratch, the room or the server may have changed
+                relay_close("", false);
+                relay.host = host;
+                relay.port = port;
+                relay.room = cmd.room;
+                relay.name = cmd.name;
+                relay.is_public = cmd.is_public;
+                relay.want_room = true;
+                relay.retry_at = now;
+                relay_publish_state(Relay_Status::State::Connecting, "");
+            }
+        }
+
+        if (cmd.list) {
+            relay.want_list = true;
+            relay.list_appid = cmd.list_appid;
+            if (!is_socket_valid(relay.sock) && !relay.want_room) {
+                std::string host;
+                uint16 port = 0;
+                if (relay_parse_server(cmd.server, host, port)) {
+                    relay.host = host;
+                    relay.port = port;
+                } else {
+                    relay.want_list = false;
+                    std::lock_guard lock(relay_mutex);
+                    relay_state.rooms_loading = false;
+                }
+            }
+        }
+    }
+
+    bool need_socket = relay.want_room || relay.want_list;
+    if (!need_socket) return;
+
+    if (!is_socket_valid(relay.sock)) {
+        if (relay.want_room && now < relay.retry_at) return;
+        if (!relay_open()) {
+            relay_close("can't reach the lobby server", relay.want_room);
+            return;
+        }
+    }
+
+    // queue what this connection still has to say
+    if (relay.want_list) {
+        std::string p;
+        relay_put_u32(p, relay.list_appid);
+        relay_queue_frame(RELAY_LIST, p);
+        relay.want_list = false;
+        // remember that an answer is pending so a browse connection isn't closed too early
+        std::lock_guard lock(relay_mutex);
+        relay_state.rooms_loading = true;
+    }
+    if (relay.want_room && !relay.joined) {
+        // the room knows us by our user id, wait until the client side registered it
+        auto user_id = std::find_if(ids.begin(), ids.end(), [](const CSteamID &id) { return id.BIndividualAccount(); });
+        if (user_id != ids.end()) {
+            std::string p;
+            relay_put_u16(p, RELAY_PROTOCOL_VERSION);
+            relay_put_u64(p, user_id->ConvertToUint64());
+            relay_put_u32(p, appid);
+            relay_put_str(p, relay.room);
+            relay_put_str(p, relay.name);
+            p.push_back((char)(relay.is_public ? 1 : 0));
+            std::string extra;
+            uint8 extra_count = 0;
+            for (auto &id : ids) {
+                if (id == *user_id || extra_count >= 8) continue;
+                relay_put_u64(extra, id.ConvertToUint64());
+                ++extra_count;
+            }
+            p.push_back((char)extra_count);
+            p.append(extra);
+            relay_queue_frame(RELAY_HELLO, p);
+            relay.joined = true;
+        }
+    }
+
+    // send
+    if (!relay_flush()) {
+        relay_close("lost connection to the lobby server", relay.want_room);
+        return;
+    }
+
+    // receive
+    char buf[16384];
+    while (true) {
+        int n = recv(relay.sock, buf, sizeof(buf), MSG_NOSIGNAL);
+        if (n > 0) {
+            relay.recv_buffer.insert(relay.recv_buffer.end(), buf, buf + n);
+            relay.last_received = now;
+            continue;
+        }
+        if (n < 0 && relay_would_block()) break;
+        relay_close(relay.welcomed ? "lost connection to the lobby server" : "can't reach the lobby server", relay.want_room);
+        return;
+    }
+
+    // parse frames
+    while (relay.recv_buffer.size() >= 5) {
+        uint32 flen = relay_get_u32(relay.recv_buffer.data());
+        if (flen < 1 || flen > RELAY_MAX_FRAME) {
+            relay_close("bad data from the lobby server", relay.want_room);
+            return;
+        }
+        if (relay.recv_buffer.size() < 4 + (size_t)flen) break;
+        std::vector<char> frame_data(relay.recv_buffer.begin() + 5, relay.recv_buffer.begin() + 4 + flen);
+        uint8 type = (uint8)relay.recv_buffer[4];
+        relay.recv_buffer.erase(relay.recv_buffer.begin(), relay.recv_buffer.begin() + 4 + flen);
+        relay_handle_frame(type, frame_data.data(), frame_data.size());
+        if (!is_socket_valid(relay.sock)) return; // the frame closed the connection
+    }
+
+    // keep alive
+    if (!relay.welcomed) {
+        if (check_timedout(relay.opened, RELAY_CONNECT_TIMEOUT)) relay_close("can't reach the lobby server", relay.want_room);
+        return;
+    }
+    if (check_timedout(relay.last_received, RELAY_IDLE_TIMEOUT)) {
+        relay_close("the lobby server stopped answering", relay.want_room);
+        return;
+    }
+    if (relay.want_room && check_timedout(relay.last_ping, RELAY_PING_INTERVAL)) {
+        relay_queue_frame(RELAY_PING, "");
+        relay.last_ping = now;
+    }
+
+    // relayed friends don't time out while the server keeps them in the room
+    for (auto &conn : connections) {
+        if (conn.relayed) conn.last_received = now;
+    }
 }

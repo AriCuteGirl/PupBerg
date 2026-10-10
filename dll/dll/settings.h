@@ -131,6 +131,13 @@ struct PupBerg_Settings {
     std::string zerotier_token_path{};
     std::string zerotier_network{}; // 16 hex chars network id to show/join
     bool zerotier_auto_join = false;
+
+    // how friends are found over the internet: ZeroTier (VPN) or the PupBerg lobby server (room codes)
+    bool server_mode = false;
+    std::string lobby_server = "130.162.243.144:47620";
+    std::string lobby_room{}; // room code pre-filled in the Network tab
+    bool lobby_public = false; // rooms created by us show up in the public room list
+    bool lobby_auto_join = false;
 };
 
 struct Overlay_Appearance {
