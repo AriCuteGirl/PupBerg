@@ -577,7 +577,7 @@ void PupOverlay::render_home()
         bool connected = rs.state == Relay_Status::State::Connected;
         ui::heading(connected ? rs.room.c_str() : "No room", 1.4f);
         if (connected) ui::text_muted("%zu %s with you", rs.members.size(), rs.members.size() == 1 ? "friend" : "friends");
-        else ui::text_muted(rs.state == Relay_Status::State::Error ? rs.error.c_str() : "Create or join a room");
+        else ui::text_muted("%s", rs.state == Relay_Status::State::Error ? rs.error.c_str() : "Create or join a room");
     } else {
         tile_header(Icon::Network, "ZeroTier");
         ui::heading(zt_ip.empty() ? "Offline" : zt_ip.c_str(), 1.4f);
@@ -822,9 +822,11 @@ void PupOverlay::render_lobby_server()
     using State = Relay_Status::State;
     bool in_room = st.state == State::Connected || st.state == State::Connecting;
 
-    if (!lobby_rooms_requested) {
+    // keep the public room list fresh while it's on screen, rooms made after opening the page show up by themselves
+    if (!lobby_rooms_requested || (!st.rooms_loading && seconds_since(lobby_rooms_time) > 5.0f)) {
         ov.network->relay_request_rooms(lobby_server_input, appid);
         lobby_rooms_requested = true;
+        lobby_rooms_time = std::chrono::steady_clock::now();
     }
 
     // status + current room
