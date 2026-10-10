@@ -946,6 +946,8 @@ void PupOverlay::render_lobby_server()
                 save_prefs();
             }
             ImGui::SetCursorScreenPos(ImVec2(row.x, std::max(bottom, ImGui::GetItemRectMax().y) + S(4.0f)));
+            // ImGui asserts if a card ends right after a SetCursorScreenPos() that grows it, submit an item
+            ImGui::Dummy(ImVec2(0, 0));
             ImGui::PopID();
             ++shown;
         }
