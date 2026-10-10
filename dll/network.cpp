@@ -1660,7 +1660,12 @@ bool Networking::relay_open()
         return false;
     }
     disable_nagle(sock);
-    connect_socket(sock, addr);
+    // the LAN only hooks would refuse the lobby server, it's on the internet
+    struct sockaddr_in sa{};
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = addr.ip;
+    sa.sin_port = addr.port;
+    connect_unhooked(static_cast<uintptr_t>(sock), (struct sockaddr *)&sa, sizeof(sa));
 
     relay.sock = sock;
     relay.recv_buffer.clear();

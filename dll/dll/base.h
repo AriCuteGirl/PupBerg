@@ -56,6 +56,8 @@ bool file_exists_(const std::string &full_path);
 unsigned int file_size_(const std::string &full_path);
 
 void set_whitelist_ips(uint32_t *from, uint32_t *to, unsigned num_ips);
+// PupBerg: connect() that skips the LAN only hooks, for the emu's own internet connections (lobby server)
+int connect_unhooked(uintptr_t sock, const struct sockaddr *addr, int addrlen);
 
 inline int get_old_interface_ver(const char *interface_name)
 {
