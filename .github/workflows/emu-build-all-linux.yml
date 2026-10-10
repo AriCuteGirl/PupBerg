@@ -47,6 +47,7 @@ jobs:
             "tool_lobby_connect",
             "tool_generate_interfaces",
             "tool_account_picker",
+            "tool_pupberg_installer",
             # tests
             "test_gamepad_linux",
           ]

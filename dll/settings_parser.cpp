@@ -659,6 +659,55 @@ static void parse_controller_config(class Settings *settings_client)
 }
 
 // steam_appid.txt
+// PupBerg: the game lives in <library>/steamapps/common/<installdir>/..., Steam's appmanifest_<appid>.acf
+// next to "common" says which appid owns that installdir
+static uint32 find_appid_from_steam_library(const std::string &program_path)
+{
+    std::error_code ec{};
+    std::filesystem::path dir(std::filesystem::u8path(program_path));
+    if (!dir.has_filename()) dir = dir.parent_path(); // strip the trailing separator
+    for (int depth = 0; depth < 12 && dir.has_parent_path() && dir != dir.parent_path(); ++depth, dir = dir.parent_path()) {
+        std::filesystem::path common = dir.parent_path();
+        if (common_helpers::to_lower(common.filename().u8string()) != "common") continue;
+        std::filesystem::path steamapps = common.parent_path();
+        if (common_helpers::to_lower(steamapps.filename().u8string()) != "steamapps") continue;
+
+        const std::string installdir = common_helpers::to_lower(dir.filename().u8string());
+        for (const auto &entry : std::filesystem::directory_iterator(steamapps, ec)) {
+            const std::string name = entry.path().filename().u8string();
+            if (name.rfind("appmanifest_", 0) != 0 || entry.path().extension() != ".acf") continue;
+
+            std::ifstream f(entry.path(), std::ios::binary);
+            std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            // pairs of quoted tokens: "key" "value"
+            std::vector<std::string> tokens{};
+            for (size_t i = 0; i < text.size(); ++i) {
+                if (text[i] != '"') continue;
+                size_t end = text.find('"', i + 1);
+                if (end == std::string::npos) break;
+                tokens.push_back(text.substr(i + 1, end - i - 1));
+                i = end;
+            }
+            uint32 appid = 0;
+            bool match = false;
+            for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+                std::string key(common_helpers::to_lower(tokens[i]));
+                if (key == "appid" && !appid) {
+                    try { appid = std::stoul(tokens[i + 1]); } catch (...) {}
+                } else if (key == "installdir" && common_helpers::to_lower(tokens[i + 1]) == installdir) {
+                    match = true;
+                }
+            }
+            if (match && appid) {
+                PRINT_DEBUG("appid %u from Steam library manifest '%s'", appid, entry.path().u8string().c_str());
+                return appid;
+            }
+        }
+        break; // only the nearest steamapps folder counts
+    }
+    return 0;
+}
+
 static uint32 parse_steam_app_id(const std::string &program_path)
 {
     uint32 appid = 0;
@@ -740,6 +789,11 @@ static uint32 parse_steam_app_id(const std::string &program_path)
         try {
             appid = std::stoul(array);
         } catch (...) {}
+    }
+
+    // PupBerg: try the Steam library this game is installed in
+    if (!appid) {
+        appid = find_appid_from_steam_library(program_path);
     }
 
     PRINT_DEBUG("final appid = %u", appid);
@@ -2183,7 +2237,19 @@ static void load_all_config_settings()
 // its appid (outside of Steam it would be lost) and the overlay stays enabled
 static void create_default_steam_settings(const std::string &steam_settings_path, uint32 appid)
 {
-    if (steam_settings_path.empty() || common_helpers::dir_exist(steam_settings_path)) return;
+    if (steam_settings_path.empty()) return;
+
+    if (common_helpers::dir_exist(steam_settings_path)) {
+        // remember the appid, the game may later be started outside of Steam or moved out of its library
+        const auto appid_file = std::filesystem::u8path(steam_settings_path + "steam_appid.txt");
+        std::error_code ec{};
+        if (appid && !std::filesystem::exists(appid_file, ec)) {
+            std::ofstream f(appid_file, std::ios::binary | std::ios::trunc);
+            f << appid << "\n";
+            PRINT_DEBUG("wrote missing steam_appid.txt (%u)", appid);
+        }
+        return;
+    }
 
     std::error_code ec{};
     std::filesystem::create_directories(std::filesystem::u8path(steam_settings_path), ec);

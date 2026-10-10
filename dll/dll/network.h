@@ -153,6 +153,7 @@ class Networking
         sock_t sock = static_cast<sock_t>(~0);
         std::vector<char> recv_buffer{};
         std::vector<char> send_buffer{};
+        bool connected = false;    // the TCP connect finished, nothing may be sent before
         bool welcomed = false;
         bool joined = false;       // HELLO sent on this connection
         bool want_room = false;    // stay in a room, reconnect if dropped

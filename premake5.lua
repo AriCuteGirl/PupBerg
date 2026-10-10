@@ -1355,6 +1355,32 @@ project "tool_account_picker"
 -- End tool_account_picker
 
 
+-- Project tool_pupberg_installer
+project "tool_pupberg_installer"
+    kind "ConsoleApp"
+    location "%{wks.location}/%{prj.name}"
+    targetdir(path.join(build_dir, os_iden, _ACTION, "%{cfg.buildcfg}/tools/pupberg_installer"))
+    targetname "pupberg_installer_%{cfg.platform}"
+
+
+    -- common source & header files
+    ---------
+    files {
+        "tools/pupberg_installer/pupberg_installer.cpp",
+        "tools/account_picker/account_picker_core.hpp",
+    }
+
+
+    -- Windows libs to link
+    ---------
+    filter { "system:windows", }
+        links {
+            'shell32',
+            'advapi32',
+        }
+-- End tool_pupberg_installer
+
+
 -- Project lib_steamnetworkingsockets START
 project "lib_steamnetworkingsockets"
     kind "SharedLib"

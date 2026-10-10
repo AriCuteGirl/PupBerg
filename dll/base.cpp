@@ -508,6 +508,12 @@ static int WINAPI Mine_Connect( SOCKET s, const sockaddr *addr, int namelen )
     }
 }
 
+int connect_unhooked(uintptr_t sock, const struct sockaddr *addr, int addrlen)
+{
+    // after DetourAttach this points to the original connect
+    return Real_Connect(static_cast<SOCKET>(sock), addr, addrlen);
+}
+
 static int WINAPI Mine_WSAConnect( SOCKET s, const sockaddr *addr, int namelen, LPWSABUF lpCallerData, LPWSABUF lpCalleeData, LPQOS lpSQOS, LPQOS lpGQOS)
 {
     PRINT_DEBUG_ENTRY();
@@ -742,6 +748,11 @@ void set_whitelist_ips(uint32_t *from, uint32_t *to, unsigned num_ips)
 
 }
 
+int connect_unhooked(uintptr_t sock, const struct sockaddr *addr, int addrlen)
+{
+    return connect(static_cast<decltype(socket(0, 0, 0))>(sock), addr, addrlen);
+}
+
 #endif // __WINDOWS__
 
 #else
@@ -749,6 +760,11 @@ void set_whitelist_ips(uint32_t *from, uint32_t *to, unsigned num_ips)
 void set_whitelist_ips(uint32_t *from, uint32_t *to, unsigned num_ips)
 {
 
+}
+
+int connect_unhooked(uintptr_t sock, const struct sockaddr *addr, int addrlen)
+{
+    return connect(static_cast<decltype(socket(0, 0, 0))>(sock), addr, addrlen);
 }
 
 #endif // EMU_EXPERIMENTAL_BUILD
