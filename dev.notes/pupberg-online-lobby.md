@@ -38,7 +38,15 @@ Goal for release `release-pupberg-0.1.2` (asked 2026-10-10):
 - [x] end-to-end test: two Linux emu instances in separate network namespaces (pasta), friends + P2P
       packets both ways through the live server
 - [x] simple release packages in release.yml (PupBerg-Windows.zip, PupBerg-Linux.tar.gz), only runs on tags
-- [ ] PR, CI green, merge, tag release-pupberg-0.1.2
+- [x] PR #4 merged, release-pupberg-0.1.2
+- [x] 0.1.3 (PR #5): the Windows build never reached the lobby server because the LAN only connect()
+      hook refused it -> connect_unhooked(); also wait for the TCP connect before sending (Wine);
+      appid from the Steam library appmanifest; pupberg_installer (+ simple packages from one
+      pupberg-simple release job). Windows DLL under Wine vs Linux peer verified through the live server.
+
+Windows/Wine test recipe: CI artifact emu-win-api_experimental-debug-x64-<sha>, a flat-C-API test
+program built with MinGW (C++ interfaces returning structs crash across MinGW/MSVC), run with
+WINEDLLOVERRIDES="winedbg.exe=d" so a crash doesn't pop up a dialog on the user's desktop.
 
 E2E test recipe: build `debug_x64 api_experimental`, two dirs with a copy of libsteam_api.so and their own
 steam_settings (configs.user.ini with different steamids + local_save_path, configs.overlay.ini with
