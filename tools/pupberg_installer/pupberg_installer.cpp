@@ -9,7 +9,9 @@
 #include <regex>
 #include <set>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <shellapi.h> // CommandLineToArgvW
+#else
 #include <unistd.h>
 #endif
 
@@ -384,7 +386,51 @@ static uint32_t ask_appid(const fs::path &dir, const std::vector<SteamGame> &gam
     }
 }
 
-int main()
+// install / update / remove PupBerg in one game folder, then make sure the Steam account is set
+static void process_game(const fs::path &dir, uint32_t appid, const Payload &payload)
+{
+    if (is_installed(dir)) {
+        std::cout << "PupBerg is already installed here. [u] update  [r] remove, restore the original  [c] cancel: ";
+        std::string a = lower(read_line());
+        if (a == "r") {
+            uninstall_game(dir);
+            return;
+        }
+        if (a != "u") return;
+    }
+
+    install_game(dir, appid, payload);
+
+    SteamAccount acc = current_account();
+    if (acc.steamid.empty() || acc.persona_name.empty() || acc.persona_name == "gse orca") {
+        std::cout << "\nPupBerg doesn't know your Steam account yet, pick it so friends see your real name:\n\n";
+        pick_account_interactive();
+    } else {
+        std::cout << "\nPlaying as '" << acc.persona_name << "' ([a] in the menu to change)\n";
+    }
+    std::cout << "\nDone! Start the game, Shift+Tab opens the PupBerg overlay.\n";
+}
+
+// a game folder given on the command line, also what Windows passes when a folder is dragged onto the exe
+static fs::path folder_argument(int argc, char **argv)
+{
+#if defined(_WIN32)
+    (void)argc;
+    (void)argv;
+    int wargc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    fs::path p{};
+    if (wargv && wargc > 1) p = fs::path(wargv[1]);
+    if (wargv) LocalFree(wargv);
+    // a Linux path typed into a Wine console
+    if (p.native().size() && p.native()[0] == L'/') p = host_path(p.u8string());
+    return p;
+#else
+    return argc > 1 ? fs::u8path(argv[1]) : fs::path{};
+#endif
+}
+
+int main(int argc, char **argv)
 {
 #if defined(_WIN32)
     SetConsoleOutputCP(CP_UTF8);
@@ -400,6 +446,21 @@ int main()
     }
 
     auto games = installed_games();
+
+    fs::path arg_dir = folder_argument(argc, argv);
+    if (!arg_dir.empty()) {
+        std::error_code ec{};
+        if (!fs::is_directory(arg_dir, ec)) {
+            std::cout << "[X] not a folder: " << arg_dir.u8string() << "\n";
+            wait_for_enter();
+            return 1;
+        }
+        std::cout << "Game folder: " << arg_dir.u8string() << "\n";
+        process_game(arg_dir, ask_appid(arg_dir, games), payload);
+        wait_for_enter();
+        return 0;
+    }
+
     while (true) {
         std::cout << "\nYour Steam games:\n";
         for (size_t i = 0; i < games.size(); ++i) {
@@ -408,6 +469,7 @@ int main()
         }
         if (games.empty()) std::cout << "  (no Steam library found)\n";
         std::cout << "  [f] a game folder that isn't in a Steam library\n"
+                     "      (or drag the game folder onto the installer / pass it as an argument)\n"
                      "  [a] change the Steam account PupBerg uses\n"
                      "  [q] quit\n\nChoose: ";
 
@@ -419,19 +481,17 @@ int main()
             continue;
         }
 
-        fs::path dir{};
-        uint32_t appid = 0;
         if (in == "f") {
             std::cout << "Game folder path: ";
             std::string p = read_line();
             if (p.size() >= 2 && p.front() == '"' && p.back() == '"') p = p.substr(1, p.size() - 2);
-            dir = host_path(p);
+            fs::path dir = host_path(p);
             std::error_code ec{};
             if (!fs::is_directory(dir, ec)) {
                 std::cout << "[X] not a folder: " << p << "\n";
                 continue;
             }
-            appid = ask_appid(dir, games);
+            process_game(dir, ask_appid(dir, games), payload);
         } else {
             size_t n = 0;
             try { n = std::stoul(in); } catch (...) {}
@@ -439,31 +499,9 @@ int main()
                 std::cout << "[X] invalid choice\n";
                 continue;
             }
-            dir = games[n - 1].dir;
-            appid = games[n - 1].appid;
             std::cout << "\n" << games[n - 1].name << "\n";
+            process_game(games[n - 1].dir, games[n - 1].appid, payload);
         }
-
-        if (is_installed(dir)) {
-            std::cout << "PupBerg is already installed here. [u] update  [r] remove, restore the original  [c] cancel: ";
-            std::string a = lower(read_line());
-            if (a == "r") {
-                uninstall_game(dir);
-                continue;
-            }
-            if (a != "u") continue;
-        }
-
-        install_game(dir, appid, payload);
-
-        SteamAccount acc = current_account();
-        if (acc.steamid.empty() || acc.persona_name.empty() || acc.persona_name == "gse orca") {
-            std::cout << "\nPupBerg doesn't know your Steam account yet, pick it so friends see your real name:\n\n";
-            pick_account_interactive();
-        } else {
-            std::cout << "\nPlaying as '" << acc.persona_name << "' ([a] in the menu to change)\n";
-        }
-        std::cout << "\nDone! Start the game, Shift+Tab opens the PupBerg overlay.\n";
     }
 
     return 0;

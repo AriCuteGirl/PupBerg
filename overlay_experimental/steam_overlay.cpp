@@ -23,6 +23,11 @@
 #endif
 
 #include "InGameOverlay/RendererDetector.h"
+// context hooks, ImTextureData internals; an earlier header defines BLOCK_SIZE, a template parameter name in there
+#pragma push_macro("BLOCK_SIZE")
+#undef BLOCK_SIZE
+#include "InGameOverlay/ImGui/imgui_internal.h"
+#pragma pop_macro("BLOCK_SIZE")
 
 #include "dll/dll.h"
 #include "dll/settings_parser.h"
@@ -374,12 +379,6 @@ void Steam_Overlay::create_fonts()
     // disable rounding the texture height to the next power of two
     // see this: https://github.com/ocornut/imgui/blob/master/docs/FONTS.md#4-font-atlas-texture-fails-to-upload-to-gpu
     fonts_atlas.Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
-    // PupBerg: glyphs are baked on demand for every font size the UI uses. Start with a big texture so the
-    // atlas doesn't have to grow (= recreate its texture) in the middle of a frame, the overlay renderer
-    // hooks then drew with a texture that was never uploaded ("ImDrawCmd is referring to ImTextureData
-    // that wasn't uploaded" assertion) when opening pages with new text sizes
-    fonts_atlas.TexMinWidth = 2048;
-    fonts_atlas.TexMinHeight = 2048;
 
     float font_size = settings->overlay_appearance.font_size;
     float font_size_fps = settings->overlay_appearance.font_size_fps > 0.0f
@@ -1718,11 +1717,60 @@ bool Steam_Overlay::try_load_ach_icon(Overlay_Achievement &ach, bool achieved, b
 }
 
 // Try to make this function as short as possible or it might affect game's fps.
+// PupBerg: runs at the end of ImGui::Render(), right before the renderer hook draws.
+// ImGui 1.92 bakes glyphs on demand and swaps the font atlas texture when it makes space. Inside the game
+// hooks a draw command sometimes still pointed at an atlas texture that was never uploaded or is about to be
+// destroyed, and the renderer then hit "ImDrawCmd is referring to ImTextureData that wasn't uploaded" (a
+// blocking assertion dialog in game, seen when switching the Network tab pages). Point such commands at the
+// current atlas texture: at worst a few glyphs look off for one frame.
+static void pupberg_fix_draw_textures(ImGuiContext *ctx, ImGuiContextHook *)
+{
+    ImDrawData *dd = ImGui::GetDrawData();
+    ImFontAtlas *atlas = ctx->IO.Fonts;
+    if (!dd || !dd->Valid || !atlas || !atlas->TexData) return;
+
+    auto usable = [dd](const ImTextureData *tex) {
+        if (tex->Status == ImTextureStatus_Destroyed) return false;
+        // the backend destroys these before drawing
+        if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0) return false;
+        if (tex->TexID != ImTextureID_Invalid) return true;
+        // not uploaded yet, fine only if the backend gets to create it this frame
+        if (tex->Status != ImTextureStatus_WantCreate || !dd->Textures) return false;
+        for (const ImTextureData *t : *dd->Textures) if (t == tex) return true;
+        return false;
+    };
+
+    if (!usable(atlas->TexData)) return; // nothing better to offer
+    for (ImDrawList *dl : dd->CmdLists) {
+        for (ImDrawCmd &cmd : dl->CmdBuffer) {
+            const ImTextureData *tex = cmd.TexRef._TexData;
+            if (!tex || tex == atlas->TexData || usable(tex)) continue;
+            PRINT_DEBUG("PupBerg: draw cmd used atlas texture #%d (status %d, texid %llu, destroy next %d, unused %d), using #%d instead",
+                tex->UniqueID, (int)tex->Status, (unsigned long long)tex->TexID, (int)tex->WantDestroyNextFrame, tex->UnusedFrames, atlas->TexData->UniqueID);
+            cmd.TexRef = atlas->TexRef;
+        }
+    }
+}
+
 void Steam_Overlay::overlay_render_proc()
 {
     std::lock_guard lock(overlay_mutex);
 
     if (!Ready()) return;
+
+    // the renderer hook may recreate its ImGui context, make sure every context has the texture fix
+    if (ImGuiContext *ctx = ImGui::GetCurrentContext()) {
+        bool hooked = false;
+        for (const ImGuiContextHook &h : ctx->Hooks) {
+            if (h.Callback == pupberg_fix_draw_textures) hooked = true;
+        }
+        if (!hooked) {
+            ImGuiContextHook hook{};
+            hook.Type = ImGuiContextHookType_RenderPost;
+            hook.Callback = pupberg_fix_draw_textures;
+            ImGui::AddContextHook(ctx, &hook);
+        }
+    }
 
     // Process achievement queue to show scheduled notifications
     process_achievement_queue();
