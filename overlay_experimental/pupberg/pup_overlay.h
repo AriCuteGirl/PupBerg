@@ -80,6 +80,7 @@ private:
     bool lobby_public = false;
     bool lobby_auto_join = false;
     bool lobby_rooms_requested = false;
+    std::chrono::steady_clock::time_point lobby_rooms_time{};
 
     std::unique_ptr<pupberg::ZeroTierClient> zt{};
     std::unique_ptr<pupberg::InputFallback> input{};
