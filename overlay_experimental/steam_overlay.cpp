@@ -1770,6 +1770,16 @@ void Steam_Overlay::overlay_render_proc()
             hook.Callback = pupberg_fix_draw_textures;
             ImGui::AddContextHook(ctx, &hook);
         }
+
+#ifdef EMU_RELEASE_BUILD
+        // PupBerg: a UI mistake must never freeze the game with an assertion dialog, ImGui can skip/repair
+        // recoverable errors instead (debug builds keep the asserts so we notice them)
+        ctx->IO.ConfigErrorRecovery = true;
+        ctx->IO.ConfigErrorRecoveryEnableAssert = false;
+        ctx->IO.ConfigErrorRecoveryEnableTooltip = false;
+        ctx->IO.ConfigErrorRecoveryEnableDebugLog = false; // would grow every frame while an error repeats
+        ctx->IO.ConfigDebugHighlightIdConflicts = false;
+#endif
     }
 
     // Process achievement queue to show scheduled notifications
