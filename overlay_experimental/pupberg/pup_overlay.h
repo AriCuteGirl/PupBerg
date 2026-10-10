@@ -48,6 +48,8 @@ private:
     pupberg::Theme custom_theme{};
     float ui_scale = 1.0f;
     float scale = 1.0f; // ui_scale * resolution factor, valid during render()
+    ImVec2 win_offset{};           // where the user dragged the window, offset from the centered position as a fraction of the screen size
+    bool dragging_window = false;
 
     char friend_search[128]{};
     char zt_network_input[32]{};

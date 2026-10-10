@@ -156,6 +156,9 @@ void PupOverlay::load_prefs()
         std::strncpy(lobby_room_input, room.c_str(), sizeof(lobby_room_input) - 1);
         lobby_public = j.value("lobby_public", lobby_public);
         lobby_auto_join = j.value("lobby_auto_join", lobby_auto_join);
+        if (j.contains("window_offset") && j["window_offset"].is_array() && j["window_offset"].size() == 2) {
+            win_offset = ImVec2(j["window_offset"][0].get<float>(), j["window_offset"][1].get<float>());
+        }
         if (j.contains("peers") && j["peers"].is_array()) {
             peer_ips.clear();
             for (const auto &p : j["peers"]) if (p.is_string()) peer_ips.push_back(p.get<std::string>());
@@ -194,6 +197,7 @@ void PupOverlay::save_prefs()
     j["lobby_room"] = std::string(lobby_room_input);
     j["lobby_public"] = lobby_public;
     j["lobby_auto_join"] = lobby_auto_join;
+    j["window_offset"] = { win_offset.x, win_offset.y };
     j["custom_theme"] = {
         { "dark", custom_theme.dark },
         { "backdrop", color_to_json(custom_theme.backdrop) },
@@ -310,7 +314,11 @@ void PupOverlay::render()
 
     const float win_w = std::min(W - S(48.0f), S(1200.0f));
     const float win_h = std::min(H - S(48.0f), S(760.0f));
-    const ImVec2 win_pos((W - win_w) * 0.5f, (H - win_h) * 0.5f + (1.0f - open_t) * S(40.0f));
+    // the user can drag the window around, keep enough of it on screen to grab it again
+    const float keep = S(120.0f);
+    win_offset.x = std::clamp(win_offset.x, (keep - win_w - (W - win_w) * 0.5f) / W, (W - keep - (W - win_w) * 0.5f) / W);
+    win_offset.y = std::clamp(win_offset.y, -((H - win_h) * 0.5f) / H, (H - keep - (H - win_h) * 0.5f) / H);
+    const ImVec2 win_pos((W - win_w) * 0.5f + win_offset.x * W, (H - win_h) * 0.5f + win_offset.y * H + (1.0f - open_t) * S(40.0f));
     const float rounding = S(22.0f);
     ui::draw_shadow(bg, win_pos, ImVec2(win_pos.x + win_w, win_pos.y + win_h), rounding, S(28.0f), (theme.dark ? 0.55f : 0.25f) * open_t);
     bg->AddRectFilled(win_pos, ImVec2(win_pos.x + win_w, win_pos.y + win_h), to_u32(theme.panel, open_t), rounding);
@@ -371,6 +379,27 @@ void PupOverlay::render()
         ImGui::PopStyleVar();
 
         ImGui::EndChild();
+
+        // drag the window by any empty spot, double click one to center it again
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive()) {
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                win_offset = ImVec2(0, 0);
+                dragging_window = false;
+                save_prefs();
+            } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                dragging_window = true;
+            }
+        }
+        if (dragging_window) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                win_offset.x += io.MouseDelta.x / W;
+                win_offset.y += io.MouseDelta.y / H;
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            } else {
+                dragging_window = false;
+                save_prefs();
+            }
+        }
     } else {
         ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
@@ -1270,7 +1299,13 @@ void PupOverlay::render_settings()
     {
         ImGui::TextUnformatted("Overlay");
         ui::text_muted("Toggle hotkey: %s (change it in configs.overlay.ini, [overlay::hotkeys])", key_combo_text().c_str());
+        ui::text_muted("Drag the window by any empty spot to move it, double click one to center it again.");
         ui::spacer(4.0f);
+        if (ui::button("Center window##center_window", ImVec2(0, 0), ButtonKind::Ghost)) {
+            win_offset = ImVec2(0, 0);
+            save_prefs();
+        }
+        ImGui::SameLine();
         if (ui::button("Switch to classic overlay##go_classic", ImVec2(0, 0), ButtonKind::Soft, Icon::None)) {
             ov.settings->pupberg.classic_frontend = true;
             save_prefs();
