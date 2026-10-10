@@ -69,22 +69,6 @@ jobs:
         working-directory: "${{ github.workspace }}"
         run: package_win.bat vs2026\debug 1
 
-      # PupBerg: small download with just what players need
-      - name: "Package PupBerg simple (Windows)"
-        shell: "pwsh"
-        working-directory: "${{ github.workspace }}"
-        run: |
-          $ErrorActionPreference = "Stop"
-          $src = "build/win/vs2026/release"
-          $dst = "build/pupberg-simple/PupBerg-Windows"
-          New-Item -ItemType Directory -Force -Path $dst | Out-Null
-          Copy-Item -Recurse -Force post_build/pupberg_simple/* $dst
-          Copy-Item "$src/experimental/x64/steam_api64.dll" $dst
-          Copy-Item "$src/experimental/x86/steam_api.dll" $dst
-          Copy-Item "$src/tools/account_picker/account_picker_x64.exe" $dst
-          Copy-Item tools/account_picker/account_picker.sh $dst
-          New-Item -ItemType Directory -Force -Path build/package/win | Out-Null
-          Compress-Archive -Force -Path $dst -DestinationPath build/package/win/PupBerg-Windows.zip
 
       # Rename
       - name: "Rename"
@@ -185,23 +169,6 @@ jobs:
         working-directory: "${{ github.workspace }}"
         run: ./package_linux.sh gmake/debug 1
 
-      # PupBerg: small download with just what players need
-      - name: "Package PupBerg simple (Linux)"
-        shell: "bash"
-        working-directory: "${{ github.workspace }}"
-        run: |
-          set -e
-          src="build/linux/gmake/release"
-          dst="build/pupberg-simple/PupBerg-Linux"
-          mkdir -p "$dst/x64" "$dst/x86"
-          cp -r post_build/pupberg_simple/. "$dst/"
-          cp "$src/experimental/x64/libsteam_api.so" "$dst/x64/"
-          cp "$src/experimental/x86/libsteam_api.so" "$dst/x86/"
-          cp tools/account_picker/account_picker.sh "$dst/"
-          cp "$src/tools/account_picker/account_picker_x64" "$dst/" || true
-          chmod +x "$dst/account_picker.sh"
-          mkdir -p build/package/linux
-          tar -C build/pupberg-simple -czf build/package/linux/PupBerg-Linux.tar.gz PupBerg-Linux
 
       # release (debug + release modes) if this is a tag push
       - name: "Release"
@@ -227,6 +194,92 @@ jobs:
         with:
           name: "release-emu-linux-debug-${{ github.sha }}"
           path: "build/package/linux/gmake/*debug*"
+          if-no-files-found: "error"
+          compression-level: 0
+          retention-days: 7
+
+  # PupBerg: small downloads with just what players need, built from the Windows + Linux build artifacts
+  pupberg-simple:
+    needs: ["emu-win-all", "emu-linux-all"]
+    runs-on: "ubuntu-24.04"
+    steps:
+      - name: "Checkout branch"
+        uses: actions/checkout@v6
+
+      - name: "Download Windows libraries"
+        uses: actions/download-artifact@v8
+        with:
+          path: "build/win"
+          pattern: "emu-win-api_experimental-release-*-${{ github.sha }}"
+          merge-multiple: true
+
+      - name: "Download Windows tools"
+        uses: actions/download-artifact@v8
+        with:
+          path: "build/win"
+          pattern: "emu-win-tool_*-release-x64-${{ github.sha }}"
+          merge-multiple: true
+
+      - name: "Download Linux libraries"
+        uses: actions/download-artifact@v8
+        with:
+          path: "build/linux"
+          pattern: "emu-linux-api_experimental-release-*-${{ github.sha }}"
+          merge-multiple: true
+
+      - name: "Download Linux tools"
+        uses: actions/download-artifact@v8
+        with:
+          path: "build/linux"
+          pattern: "emu-linux-tool_*-release-x64-${{ github.sha }}"
+          merge-multiple: true
+
+      - name: "Package"
+        shell: "bash"
+        run: |
+          set -e
+          find build -type f | sort
+          win="build/win/vs2026/release"
+          lin="build/linux/gmake/release"
+          out="build/package/pupberg"
+          mkdir -p "$out"
+
+          w="build/pupberg-simple/PupBerg-Windows"
+          mkdir -p "$w"
+          cp -r post_build/pupberg_simple/. "$w/"
+          cp "$win/experimental/x64/steam_api64.dll" "$win/experimental/x86/steam_api.dll" "$w/"
+          cp "$win/tools/pupberg_installer/pupberg_installer_x64.exe" "$w/pupberg_installer.exe"
+          cp "$win/tools/account_picker/account_picker_x64.exe" "$w/"
+          cp tools/account_picker/account_picker.sh "$w/"
+          (cd build/pupberg-simple && zip -r -9 "$OLDPWD/$out/PupBerg-Windows.zip" PupBerg-Windows)
+
+          # Linux players mostly run Windows games through Proton, so the Windows libraries come along
+          l="build/pupberg-simple/PupBerg-Linux"
+          mkdir -p "$l/x64" "$l/x86"
+          cp -r post_build/pupberg_simple/. "$l/"
+          cp "$win/experimental/x64/steam_api64.dll" "$win/experimental/x86/steam_api.dll" "$l/"
+          cp "$lin/experimental/x64/libsteam_api.so" "$l/x64/"
+          cp "$lin/experimental/x86/libsteam_api.so" "$l/x86/"
+          cp "$lin/tools/pupberg_installer/pupberg_installer_x64" "$l/pupberg_installer"
+          cp tools/pupberg_installer/pupberg_installer.sh "$l/"
+          cp "$lin/tools/account_picker/account_picker_x64" "$l/"
+          cp tools/account_picker/account_picker.sh "$l/"
+          chmod +x "$l/pupberg_installer" "$l/pupberg_installer.sh" "$l/account_picker_x64" "$l/account_picker.sh"
+          tar -C build/pupberg-simple -czf "$out/PupBerg-Linux.tar.gz" PupBerg-Linux
+          ls -la "$out"
+
+      - name: "Release"
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: "build/package/pupberg/*"
+
+      - name: "Upload packages"
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: "pupberg-simple-${{ github.sha }}"
+          path: "build/package/pupberg/*"
           if-no-files-found: "error"
           compression-level: 0
           retention-days: 7
