@@ -1575,7 +1575,8 @@ void Networking::relay_request_rooms(const std::string &server, uint32 appid)
     std::lock_guard lock(relay_mutex);
     relay_cmd.list = true;
     relay_cmd.list_appid = appid;
-    if (!relay_cmd.join && relay_state.state == Relay_Status::State::Off) relay_cmd.server = server;
+    // a pending join keeps its own server, it's used for the list too
+    if (!relay_cmd.join) relay_cmd.server = server;
     relay_state.rooms_loading = true;
 }
 
@@ -1903,7 +1904,8 @@ void Networking::relay_run()
         }
     }
 
-    bool need_socket = relay.want_room || relay.want_list;
+    // an open connection is serviced until it's closed, a browse-only one still waits for the room list
+    bool need_socket = relay.want_room || relay.want_list || is_socket_valid(relay.sock);
     if (!need_socket) return;
 
     if (!is_socket_valid(relay.sock)) {
