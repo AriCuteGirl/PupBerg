@@ -18,6 +18,10 @@
 #include "dll/network.h"
 #include "dll/dll.h"
 
+#if !defined(STEAM_WIN32)
+#include <poll.h>
+#endif
+
 #define MAX_BROADCASTS 16
 static int number_broadcasts = -1;
 static IP_PORT broadcasts[MAX_BROADCASTS];
@@ -1480,6 +1484,40 @@ static bool relay_would_block()
 #endif
 }
 
+// 1 = connected, 0 = still connecting, -1 = failed
+static int relay_connect_state(sock_t sock)
+{
+    int ready = 0;
+    bool failed = false;
+#if defined(STEAM_WIN32)
+    fd_set wset, eset;
+    FD_ZERO(&wset);
+    FD_ZERO(&eset);
+    FD_SET(sock, &wset);
+    FD_SET(sock, &eset);
+    timeval tv{};
+    ready = select(0, nullptr, &wset, &eset, &tv);
+    if (ready > 0 && FD_ISSET(sock, &eset)) failed = true; // Windows reports a refused connect here
+#else
+    struct pollfd pfd{};
+    pfd.fd = sock;
+    pfd.events = POLLOUT;
+    ready = poll(&pfd, 1, 0);
+    if (ready > 0 && (pfd.revents & (POLLERR | POLLHUP))) failed = true;
+#endif
+    if (ready < 0) return -1;
+    if (ready == 0) return 0;
+
+    int err = 0;
+#if defined(STEAM_WIN32)
+    int len = sizeof(err);
+#else
+    socklen_t len = sizeof(err);
+#endif
+    getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+    return (failed || err) ? -1 : 1;
+}
+
 static void relay_put_u16(std::string &s, uint16 v) { s.push_back((char)(v & 0xFF)); s.push_back((char)(v >> 8)); }
 static void relay_put_u32(std::string &s, uint32 v) { for (int i = 0; i < 4; ++i) s.push_back((char)((v >> (8 * i)) & 0xFF)); }
 static void relay_put_u64(std::string &s, uint64 v) { for (int i = 0; i < 8; ++i) s.push_back((char)((v >> (8 * i)) & 0xFF)); }
@@ -1627,6 +1665,7 @@ bool Networking::relay_open()
     relay.sock = sock;
     relay.recv_buffer.clear();
     relay.send_buffer.clear();
+    relay.connected = false;
     relay.welcomed = false;
     relay.joined = false;
     relay.opened = relay.last_received = relay.last_ping = std::chrono::high_resolution_clock::now();
@@ -1654,6 +1693,7 @@ void Networking::relay_close(const std::string &error, bool keep_room)
     relay.sock = static_cast<sock_t>(~0);
     relay.recv_buffer.clear();
     relay.send_buffer.clear();
+    relay.connected = false;
     relay.welcomed = false;
     relay.joined = false;
     relay_drop_members();
@@ -1702,6 +1742,8 @@ bool Networking::relay_send_message(uint64 dest, Common_Message *msg)
 
 bool Networking::relay_flush()
 {
+    // Wine reports "connection reset" when sending before the connect finished, Linux just waits
+    if (!relay.connected) return true;
     while (relay.send_buffer.size()) {
         int n = send(relay.sock, relay.send_buffer.data(), static_cast<int>(std::min<size_t>(relay.send_buffer.size(), 1 << 20)), MSG_NOSIGNAL);
         if (n > 0) {
@@ -1949,6 +1991,22 @@ void Networking::relay_run()
             relay_queue_frame(RELAY_HELLO, p);
             relay.joined = true;
         }
+    }
+
+    // wait for the TCP connect before touching the socket
+    if (!relay.connected) {
+        int state = relay_connect_state(relay.sock);
+        if (state < 0) {
+            relay_close("can't reach the lobby server", relay.want_room);
+            return;
+        }
+        if (state == 0) {
+            if (check_timedout(relay.opened, RELAY_CONNECT_TIMEOUT)) relay_close("can't reach the lobby server", relay.want_room);
+            return;
+        }
+        relay.connected = true;
+        relay.last_received = now;
+        PRINT_DEBUG("PupBerg relay connected");
     }
 
     // send
