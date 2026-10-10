@@ -94,6 +94,34 @@ struct Connection {
     std::vector<CSteamID> ids{};
     uint32 appid{};
     std::chrono::high_resolution_clock::time_point last_received{};
+    bool relayed = false; // PupBerg: a lobby server room member, all traffic goes through the server
+};
+
+// PupBerg: lobby server (room codes over the internet, see tools/lobby_server)
+struct Relay_Member {
+    uint64 id{};
+    uint32 appid{};
+    std::string name{};
+    std::vector<uint64> extra_ids{}; // ex: the friend's game server id
+};
+
+struct Relay_Room_Info {
+    std::string code{};
+    std::string host{};
+    uint32 members{};
+    uint32 appid{};
+};
+
+struct Relay_Status {
+    enum class State { Off, Connecting, Connected, Error };
+    State state = State::Off;
+    std::string server{};
+    std::string room{};
+    bool is_public = false;
+    std::string error{};
+    std::vector<Relay_Member> members{}; // everyone else in the room
+    std::vector<Relay_Room_Info> rooms{}; // last public room list
+    bool rooms_loading = false;
 };
 
 class Networking
@@ -119,6 +147,49 @@ class Networking
 
     struct Network_Callback_Container callbacks[CALLBACK_IDS_MAX];
     std::vector<Common_Message> local_send;
+
+    // PupBerg: lobby server relay, only touched from Run() except the command/status members
+    struct Relay {
+        sock_t sock = static_cast<sock_t>(~0);
+        std::vector<char> recv_buffer{};
+        std::vector<char> send_buffer{};
+        bool welcomed = false;
+        bool joined = false;       // HELLO sent on this connection
+        bool want_room = false;    // stay in a room, reconnect if dropped
+        bool want_list = false;    // a room list request is pending
+        uint32 list_appid = 0;
+        std::string host{};
+        uint16 port = 0;
+        std::string room{};
+        std::string name{};
+        bool is_public = false;
+        std::chrono::high_resolution_clock::time_point opened{}, last_ping{}, last_received{}, retry_at{};
+        std::vector<Relay_Member> members{};
+    } relay{};
+    struct Relay_Command {
+        bool join = false;
+        bool leave = false;
+        bool list = false;
+        std::string server{};
+        std::string room{};
+        std::string name{};
+        bool is_public = false;
+        uint32 list_appid = 0;
+    } relay_cmd{};
+    std::mutex relay_mutex{}; // guards relay_cmd and relay_state
+    Relay_Status relay_state{};
+
+    void relay_run();
+    bool relay_open();
+    void relay_close(const std::string &error, bool keep_room);
+    void relay_queue_frame(uint8 type, const std::string &payload);
+    void relay_handle_frame(uint8 type, const char *data, size_t len);
+    void relay_member_joined(const Relay_Member &member);
+    void relay_member_left(uint64 id);
+    void relay_drop_members();
+    void relay_publish_state(Relay_Status::State state, const std::string &error);
+    bool relay_send_message(uint64 dest, Common_Message *msg);
+    bool relay_flush(); // false when the connection broke
 
     struct Connection *find_connection(CSteamID id, uint32 appid = 0);
     struct Connection *new_connection(CSteamID id, uint32 appid);
@@ -147,6 +218,14 @@ public:
     void addListenId(CSteamID id);
     // PupBerg: thread-safe, ip/port in host byte order, port 0 = our own listen port
     void add_custom_broadcast(uint32 ip, uint16 port = 0);
+
+    // PupBerg lobby server, safe to call from any thread, applied on the next Run()
+    // server is "host:port", room is a 4-32 chars code
+    void relay_join(const std::string &server, const std::string &room, const std::string &name, bool is_public);
+    void relay_leave();
+    void relay_request_rooms(const std::string &server, uint32 appid);
+    Relay_Status relay_status();
+    static uint32 relay_virtual_ip(uint64 steam_id);
     void setAppID(uint32 appid);
     void Run();
 

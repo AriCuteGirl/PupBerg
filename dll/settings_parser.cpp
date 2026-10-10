@@ -1639,6 +1639,13 @@ static void parse_overlay_pupberg(class Settings *settings_client, class Setting
     pup.zerotier_network = common_helpers::to_lower(common_helpers::string_strip(ini.GetValue("overlay::pupberg", "zerotier_network", "")));
     pup.zerotier_auto_join = ini.GetBoolValue("overlay::pupberg", "zerotier_auto_join", false);
 
+    std::string mode(common_helpers::to_lower(common_helpers::string_strip(ini.GetValue("overlay::pupberg", "network_mode", "zerotier"))));
+    pup.server_mode = mode == "server";
+    pup.lobby_server = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "lobby_server", pup.lobby_server.c_str()));
+    pup.lobby_room = common_helpers::string_strip(ini.GetValue("overlay::pupberg", "lobby_room", ""));
+    pup.lobby_public = ini.GetBoolValue("overlay::pupberg", "lobby_public", false);
+    pup.lobby_auto_join = ini.GetBoolValue("overlay::pupberg", "lobby_auto_join", false);
+
     PRINT_DEBUG("PupBerg frontend='%s' theme='%s' scale=%f zt_network='%s'", frontend.c_str(), pup.theme.c_str(), pup.ui_scale, pup.zerotier_network.c_str());
     settings_client->pupberg = pup;
     settings_server->pupberg = pup;
@@ -2172,6 +2179,37 @@ static void load_all_config_settings()
 }
 
 
+// PupBerg: recreate steam_settings next to the steam_api library when it's missing, so the game keeps
+// its appid (outside of Steam it would be lost) and the overlay stays enabled
+static void create_default_steam_settings(const std::string &steam_settings_path, uint32 appid)
+{
+    if (steam_settings_path.empty() || common_helpers::dir_exist(steam_settings_path)) return;
+
+    std::error_code ec{};
+    std::filesystem::create_directories(std::filesystem::u8path(steam_settings_path), ec);
+    if (ec) {
+        PRINT_DEBUG("couldn't create '%s': %s", steam_settings_path.c_str(), ec.message().c_str());
+        return;
+    }
+    PRINT_DEBUG("created missing steam_settings folder '%s'", steam_settings_path.c_str());
+
+    if (appid) {
+        std::ofstream f(std::filesystem::u8path(steam_settings_path + "steam_appid.txt"), std::ios::binary | std::ios::trunc);
+        f << appid << "\n";
+    }
+
+#ifdef EMU_OVERLAY
+    {
+        std::ofstream f(std::filesystem::u8path(steam_settings_path + config_ini_overlay), std::ios::binary | std::ios::trunc);
+        f << "[overlay::general]\nenable_experimental_overlay=1\n";
+    }
+    // the ini files were already read, enable it for this launch too unless the user configured it globally
+    if (!ini.KeyExists("overlay::general", "enable_experimental_overlay")) {
+        ini.SetValue("overlay::general", "enable_experimental_overlay", "1");
+    }
+#endif
+}
+
 uint32 create_localstorage_settings(Settings **settings_client_out, Settings **settings_server_out, Local_Storage **local_storage_out)
 {
     PRINT_DEBUG("start ----------");
@@ -2197,6 +2235,7 @@ uint32 create_localstorage_settings(Settings **settings_client_out, Settings **s
     PRINT_DEBUG("global settings path: '%s'", local_storage->get_global_settings_path().c_str());
     uint32 appid = parse_steam_app_id(program_path);
     local_storage->setAppId(appid);
+    create_default_steam_settings(steam_settings_path, appid);
 
     // Custom broadcasts
     std::set<IP_PORT> custom_broadcasts{};
