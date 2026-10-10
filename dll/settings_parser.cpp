@@ -2101,7 +2101,32 @@ static void load_all_config_settings()
     } else { // only read global folder if we're not using local save
         CSimpleIniA global_ini{};
         global_ini.SetUnicode();
-        
+
+#if defined(STEAM_WIN32)
+        // under Wine/Proton every prefix has its own %APPDATA%, read the Linux host global settings first
+        // so the same identity/settings apply to all prefixes, the prefix ones only fill in missing keys
+        const wchar_t *wine_home = _wgetenv(L"WINEHOMEDIR");
+        if (wine_home && wine_home[0]) {
+            std::wstring home(wine_home);
+            if (home.rfind(L"\\??\\", 0) == 0) home.erase(0, 4);
+            std::string host_settings_path(utf8_encode(home) + "\\.local\\share\\" + Local_Storage::get_saves_folder_name() + "\\" + Local_Storage::settings_storage_folder + "\\");
+            for (const auto &config_file : config_files) {
+                std::ifstream ini_file( std::filesystem::u8path(host_settings_path + config_file), std::ios::binary | std::ios::in);
+                if (!ini_file.is_open()) continue;
+
+                CSimpleIniA host_ini{};
+                host_ini.SetUnicode();
+                auto err = host_ini.LoadData(ini_file);
+                ini_file.close();
+                PRINT_DEBUG("result of parsing Wine host global ini '%s' %i (success == 0)", config_file, (int)err);
+
+                if (err == SI_OK) {
+                    merge_ini(host_ini);
+                }
+            }
+        }
+#endif // STEAM_WIN32
+
         // now we can access get_user_appdata_path() which might have been changed by the above code
         for (const auto &config_file : config_files) {
             std::ifstream ini_file( std::filesystem::u8path(Local_Storage::get_user_appdata_path() + Local_Storage::settings_storage_folder + PATH_SEPARATOR + config_file), std::ios::binary | std::ios::in);

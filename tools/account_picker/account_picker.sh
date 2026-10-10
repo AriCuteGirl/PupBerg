@@ -99,7 +99,15 @@ write_user_ini() {
 targets=("${XDG_DATA_HOME:-$HOME/.local/share}/GSE Saves/settings/configs.user.ini")
 
 # Proton/Wine prefixes where the emu already ran, plus any passed on the command line
-search_roots=("$HOME/.wine" "$HOME/.local/share/proton-pfx" "$steam_dir/steamapps/compatdata")
+search_roots=(
+  "$HOME/.wine"
+  "$HOME/.local/share/proton-pfx"
+  "$steam_dir/steamapps/compatdata"
+  "$HOME/PortProton/data/prefixes"
+  "$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles"
+  "$HOME/.local/share/bottles/bottles"
+  "$HOME/Games"
+)
 if [[ -f "$steam_dir/steamapps/libraryfolders.vdf" ]]; then
   while IFS= read -r lib; do
     search_roots+=("$lib/steamapps/compatdata")
@@ -115,9 +123,13 @@ done < <(find "${search_roots[@]}" -maxdepth 9 -type d -path '*/drive_c/users/*/
 
 # an explicitly passed prefix gets the file even if the emu never ran there yet
 for prefix in "$@"; do
-  for roaming in "$prefix"/drive_c/users/*/AppData/Roaming "$prefix"/pfx/drive_c/users/*/AppData/Roaming; do
-    [[ -d "$roaming" && "$roaming" != */Public/* ]] && targets+=("$roaming/GSE Saves/settings/configs.user.ini")
+  found_user=0
+  for user_dir in "$prefix"/drive_c/users/* "$prefix"/pfx/drive_c/users/*; do
+    [[ -d "$user_dir" && "$(basename "$user_dir")" != "Public" ]] || continue
+    targets+=("$user_dir/AppData/Roaming/GSE Saves/settings/configs.user.ini")
+    found_user=1
   done
+  [[ $found_user = 1 ]] || echo "[X] '$prefix' doesn't look like a Wine/Proton prefix (no drive_c/users), skipping"
 done
 
 echo
