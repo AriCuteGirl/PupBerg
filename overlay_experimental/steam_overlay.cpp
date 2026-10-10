@@ -374,6 +374,12 @@ void Steam_Overlay::create_fonts()
     // disable rounding the texture height to the next power of two
     // see this: https://github.com/ocornut/imgui/blob/master/docs/FONTS.md#4-font-atlas-texture-fails-to-upload-to-gpu
     fonts_atlas.Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+    // PupBerg: glyphs are baked on demand for every font size the UI uses. Start with a big texture so the
+    // atlas doesn't have to grow (= recreate its texture) in the middle of a frame, the overlay renderer
+    // hooks then drew with a texture that was never uploaded ("ImDrawCmd is referring to ImTextureData
+    // that wasn't uploaded" assertion) when opening pages with new text sizes
+    fonts_atlas.TexMinWidth = 2048;
+    fonts_atlas.TexMinHeight = 2048;
 
     float font_size = settings->overlay_appearance.font_size;
     float font_size_fps = settings->overlay_appearance.font_size_fps > 0.0f
