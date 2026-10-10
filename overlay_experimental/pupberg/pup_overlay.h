@@ -30,9 +30,11 @@ public:
     void render();
     // a small floating button over the classic overlay to come back to PupBerg
     void render_classic_switch();
+    // drawn every frame, also while the overlay is closed: the invite popup
+    void render_always(bool overlay_shown);
 
 private:
-    enum class Page { Home, Friends, Network, Gallery, Settings };
+    enum class Page { Home, Friends, Chat, Network, Gallery, Settings };
 
     Steam_Overlay &ov;
 
@@ -53,6 +55,21 @@ private:
     bool zt_auto_join = false;
     bool zt_auto_join_done = false;
     std::vector<std::string> peer_ips{};
+
+    // chat page
+    uint64_t chat_friend_id = 0;
+    size_t chat_seen_len = 0;
+    bool chat_focus_input = false;
+
+    // centered invite popup, one at a time
+    struct InvitePopup {
+        uint64_t friend_id = 0;
+        float age = 0.0f;       // for the entry animation
+        float elapsed = 0.0f;   // counts towards the timeout, paused while the overlay is open
+        float closing = -1.0f;  // >= 0 while fading out
+    };
+    std::vector<InvitePopup> invite_popups{};
+    std::set<uint64_t> invites_seen{};
 
     // online lobby server (room codes, no VPN), the other way to find friends besides ZeroTier
     bool server_mode = false;
@@ -78,6 +95,9 @@ private:
     void render_home();
     void render_friends();
     void render_network();
+    void render_chat();
+    void open_chat(uint64_t friend_id);
+    void render_invite_popup(bool overlay_shown);
     void render_zerotier();
     void render_lobby_server();
     void set_network_mode(bool server);

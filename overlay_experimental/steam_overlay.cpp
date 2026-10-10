@@ -1914,6 +1914,9 @@ void Steam_Overlay::overlay_render_proc()
     // Pinned screenshot (always rendered when active, click-through when overlay closed)
     render_pinned_screenshot();
 
+    // PupBerg invite popup, also while playing
+    if (pup_ui) pup_ui->render_always(show_overlay);
+
     if (notifications.size()) {
         ImGuiIO &io = ImGui::GetIO();
         build_notifications(io.DisplaySize.x, io.DisplaySize.y);

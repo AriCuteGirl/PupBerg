@@ -3,6 +3,11 @@
 #include "pupberg/pup_overlay.h"
 
 #include "overlay/steam_overlay.h"
+// BringWindowToDisplayFront() for the invite popup; an earlier header defines BLOCK_SIZE, a template parameter name in there
+#pragma push_macro("BLOCK_SIZE")
+#undef BLOCK_SIZE
+#include "InGameOverlay/ImGui/imgui_internal.h"
+#pragma pop_macro("BLOCK_SIZE")
 #include "dll/dll.h"
 
 #include "pupberg/pup_ui.h"
@@ -331,7 +336,7 @@ void PupOverlay::render()
         ImGui::PopStyleVar();
 
         // page header with a close button on the right
-        static const char *titles[] = { "Home", "Friends", "Network", "Gallery", "Settings" };
+        static const char *titles[] = { "Home", "Friends", "Chat", "Network", "Gallery", "Settings" };
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, open_t * page_t);
         ImVec2 header_pos = ImGui::GetCursorScreenPos();
         ui::heading(titles[(int)page], 1.7f);
@@ -357,6 +362,7 @@ void PupOverlay::render()
         switch (page) {
         case Page::Home: render_home(); break;
         case Page::Friends: render_friends(); break;
+        case Page::Chat: render_chat(); break;
         case Page::Network: render_network(); break;
         case Page::Gallery: render_gallery(); break;
         case Page::Settings: render_settings(); break;
@@ -404,6 +410,7 @@ void PupOverlay::render_sidebar(float width, float height)
     static const NavEntry entries[] = {
         { "Home##nav", Icon::Home, Page::Home },
         { "Friends##nav", Icon::Friends, Page::Friends },
+        { "Chat##nav", Icon::Chat, Page::Chat },
         { "Network##nav", Icon::Network, Page::Network },
         { "Gallery##nav", Icon::Camera, Page::Gallery },
         { "Settings##nav", Icon::Gear, Page::Settings },
@@ -688,7 +695,7 @@ void PupOverlay::render_friends()
 
         place();
         if (ui::button("Chat##fr_chat", ImVec2(bw, bh), ButtonKind::Soft, Icon::Chat)) {
-            state.window_state |= window_state_show;
+            open_chat(frd.id());
         }
         if (can_invite) {
             place();
@@ -1280,6 +1287,278 @@ void PupOverlay::render_settings()
 }
 
 // friend chat windows + the screenshots gallery are regular ImGui windows, drawn with the PupBerg style
+// ---------------------------------------------------------------------------
+// Chat
+
+void PupOverlay::open_chat(uint64_t friend_id)
+{
+    chat_friend_id = friend_id;
+    chat_seen_len = 0;
+    chat_focus_input = true;
+    set_page(Page::Chat);
+}
+
+void PupOverlay::render_chat()
+{
+    if (ov.friends.empty()) {
+        ui::begin_card("##chat_empty");
+        ui::heading("Nobody to chat with yet", 1.2f);
+        ui::text_muted("Friends show up here once they're online in PupBerg (Friends and Network tabs).");
+        ui::end_card();
+        return;
+    }
+
+    std::pair<const Friend, friend_window_state> *sel = nullptr;
+    for (auto &e : ov.friends) {
+        if ((uint64)e.first.id() == chat_friend_id) sel = &e;
+    }
+    if (!sel) {
+        sel = &*ov.friends.begin();
+        chat_friend_id = sel->first.id();
+        chat_seen_len = 0;
+    }
+    // reading it counts as seen
+    sel->second.window_state &= ~window_state_need_attention;
+
+    const float h = std::max(S(360.0f), ImGui::GetContentRegionAvail().y - S(8.0f));
+    const float list_w = S(240.0f);
+
+    // friend list
+    ImGui::BeginChild("##chat_list", ImVec2(list_w, h), ImGuiChildFlags_None);
+    for (auto &e : ov.friends) {
+        const Friend &frd = e.first;
+        bool selected = &e == sel;
+        bool unread = (e.second.window_state & window_state_need_attention) != 0;
+        ImGui::PushID((int)frd.id());
+        const float row_h = S(48.0f);
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##chat_sel", selected, ImGuiSelectableFlags_None, ImVec2(list_w - S(8.0f), row_h))) {
+            chat_friend_id = frd.id();
+            chat_seen_len = 0;
+            chat_focus_input = true;
+        }
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        float r = row_h * 0.36f;
+        ui::draw_avatar(dl, ImVec2(p.x + S(8.0f) + r, p.y + row_h * 0.5f), r, frd.name(), true);
+        dl->AddText(ImVec2(p.x + S(16.0f) + r * 2.0f, p.y + (row_h - ImGui::GetFontSize()) * 0.5f),
+                    to_u32(selected ? theme.accent : theme.text), frd.name().c_str());
+        if (unread) {
+            dl->AddCircleFilled(ImVec2(p.x + list_w - S(24.0f), p.y + row_h * 0.5f), S(5.0f), to_u32(theme.accent), 16);
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine(0.0f, S(14.0f));
+
+    // conversation
+    friend_window_state &state = sel->second;
+    const Friend &frd = sel->first;
+    ImGui::BeginChild("##chat_conv", ImVec2(0, h), ImGuiChildFlags_None);
+    {
+        ui::heading(frd.name().c_str(), 1.25f);
+        bool same_app = ov.settings->get_local_game_id().AppID() == frd.appid();
+        ui::text_muted(same_app ? "Playing this game" : "Playing another game (%u)", frd.appid());
+        ui::spacer(6.0f);
+
+        const float input_h = ImGui::GetFrameHeight() + S(16.0f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.card);
+        ImGui::BeginChild("##chat_history", ImVec2(0, ImGui::GetContentRegionAvail().y - input_h), ImGuiChildFlags_AlwaysUseWindowPadding);
+        {
+            const std::string me = std::string(ov.settings->get_local_name()) + ": ";
+            const std::string &hist = state.chat_history;
+            if (hist.empty()) ui::text_muted("No messages yet, say hi!");
+            size_t pos = 0;
+            while (pos < hist.size()) {
+                size_t nl = hist.find('\n', pos);
+                if (nl == std::string::npos) nl = hist.size();
+                std::string line = hist.substr(pos, nl - pos);
+                pos = nl + 1;
+                if (line.empty()) continue;
+                bool mine = line.rfind(me, 0) == 0;
+                size_t colon = line.find(": ");
+                if (colon != std::string::npos) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, mine ? theme.accent : theme.accent2);
+                    ImGui::TextUnformatted(line.substr(0, colon).c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine(0.0f, S(8.0f));
+                    ImGui::PushTextWrapPos(0.0f);
+                    ImGui::TextUnformatted(line.substr(colon + 2).c_str());
+                    ImGui::PopTextWrapPos();
+                } else {
+                    ImGui::TextWrapped("%s", line.c_str());
+                }
+                ui::spacer(2.0f);
+            }
+            // follow new messages
+            if (hist.size() != chat_seen_len) {
+                ImGui::SetScrollHereY(1.0f);
+                chat_seen_len = hist.size();
+            }
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+
+        ui::spacer(8.0f);
+        const float send_w = S(110.0f);
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - send_w - S(10.0f));
+        if (chat_focus_input) {
+            ImGui::SetKeyboardFocusHere();
+            chat_focus_input = false;
+        }
+        bool send = ImGui::InputTextWithHint("##chat_input", "Message...", state.chat_input, max_chat_len, ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopItemWidth();
+        ImGui::SameLine(0.0f, S(10.0f));
+        if (ui::button("Send##chat_send", ImVec2(send_w, 0), ButtonKind::Primary, Icon::Chat, state.chat_input[0] != 0)) send = true;
+        if (send && state.chat_input[0]) {
+            // same path as the classic chat window, sent on the next overlay callback
+            if (!(state.window_state & window_state_send_message)) {
+                state.window_state |= window_state_send_message;
+                ov.has_friend_action.push(frd);
+            }
+            chat_focus_input = true;
+        }
+    }
+    ImGui::EndChild();
+}
+
+// ---------------------------------------------------------------------------
+// Invite popup
+
+void PupOverlay::render_always(bool overlay_shown)
+{
+    // a new invite pops up once, it stays on the friend card after the popup is gone
+    for (auto &e : ov.friends) {
+        uint64 id = e.first.id();
+        bool invited = (e.second.window_state & (window_state_lobby_invite | window_state_rich_invite)) != 0;
+        if (invited && !invites_seen.count(id)) {
+            invites_seen.insert(id);
+            InvitePopup p{};
+            p.friend_id = id;
+            invite_popups.push_back(p);
+        } else if (!invited && invites_seen.count(id)) {
+            // accepted, declined or withdrawn
+            invites_seen.erase(id);
+            for (auto &p : invite_popups) {
+                if (p.friend_id == id && p.closing < 0.0f) p.closing = 0.0f;
+            }
+        }
+    }
+
+    render_invite_popup(overlay_shown);
+}
+
+void PupOverlay::render_invite_popup(bool overlay_shown)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    if (invite_popups.empty() || W <= 0 || H <= 0) return;
+
+    constexpr float LIFETIME = 10.0f, IN_TIME = 0.35f, OUT_TIME = 0.3f;
+    const float dt = std::clamp(io.DeltaTime, 0.0f, 0.1f);
+
+    InvitePopup &p = invite_popups.front();
+    std::pair<const Friend, friend_window_state> *entry = nullptr;
+    for (auto &e : ov.friends) {
+        if ((uint64)e.first.id() == p.friend_id) entry = &e;
+    }
+    if (!entry && p.closing < 0.0f) p.closing = 0.0f; // the friend left
+
+    p.age += dt;
+    if (!overlay_shown) p.elapsed += dt; // don't run out while the player is answering
+    if (p.closing < 0.0f && p.elapsed >= LIFETIME) p.closing = 0.0f;
+    if (p.closing >= 0.0f) {
+        p.closing += dt;
+        if (p.closing >= OUT_TIME) {
+            invite_popups.erase(invite_popups.begin());
+            return;
+        }
+    }
+
+    const float in_t = ease_out_cubic(p.age / IN_TIME);
+    const float out_t = p.closing >= 0.0f ? 1.0f - ease_out_cubic(p.closing / OUT_TIME) : 1.0f;
+    const float alpha = in_t * out_t;
+
+    scale = ui_scale * std::clamp(H / 1080.0f, 0.8f, 2.0f);
+    if (theme_name == CUSTOM_THEME_NAME) theme = custom_theme;
+    ui::begin_frame(theme, scale);
+    ImGui::PushFont(ov.font_default, ov.settings->overlay_appearance.font_size * scale);
+    auto style_counts = push_imgui_style(theme, scale);
+
+    const float card_w = S(460.0f), card_h = S(200.0f);
+    // slides down into place and scales up a little
+    const float pop = 0.92f + 0.08f * in_t;
+    const ImVec2 size(card_w * pop, card_h * pop);
+    const ImVec2 pos((W - size.x) * 0.5f, H * 0.32f - size.y * 0.5f - (1.0f - in_t) * S(30.0f));
+
+    ImDrawList *fg = ImGui::GetForegroundDrawList();
+    ui::draw_shadow(fg, pos, ImVec2(pos.x + size.x, pos.y + size.y), S(22.0f), S(26.0f), (theme.dark ? 0.6f : 0.3f) * alpha);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, S(22.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(22.0f), S(18.0f)));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme.panel);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme.accent);
+    ImGui::SetNextWindowPos(pos);
+    ImGui::SetNextWindowSize(size);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+    // click-through while playing, the game has the mouse
+    if (!overlay_shown) flags |= ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("##pupberg_invite_popup", nullptr, flags)) {
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+        const std::string name = entry ? entry->first.name() : std::string("A friend");
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+
+        // avatar with a pulsing ring
+        ImVec2 c = ImGui::GetCursorScreenPos();
+        const float r = S(30.0f);
+        ImVec2 center(c.x + r, c.y + r);
+        float pulse = 0.5f + 0.5f * std::sin(ui::ctx().time * 5.0f);
+        dl->AddCircle(center, r + S(4.0f) + pulse * S(3.0f), to_u32(theme.accent, (0.35f + 0.4f * pulse) * alpha), 40, S(2.5f));
+        ui::draw_avatar(dl, center, r, name, true);
+        ImGui::Dummy(ImVec2(r * 2.0f, r * 2.0f));
+
+        ImGui::SameLine(0.0f, S(16.0f));
+        ImGui::BeginGroup();
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(4.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.accent);
+        ui::heading(name.c_str(), 1.3f);
+        ImGui::PopStyleColor();
+        ImGui::TextUnformatted("invited you to play!");
+        ImGui::EndGroup();
+
+        ui::spacer(10.0f);
+        if (overlay_shown && entry) {
+            const float bw = (ImGui::GetContentRegionAvail().x - S(12.0f)) * 0.5f;
+            if (ui::button("Accept##invite_accept", ImVec2(bw, 0), ButtonKind::Primary, Icon::Paw)) {
+                entry->second.window_state |= window_state_join;
+                ov.has_friend_action.push(entry->first);
+                if (p.closing < 0.0f) p.closing = 0.0f;
+            }
+            ImGui::SameLine(0.0f, S(12.0f));
+            if (ui::button("Decline##invite_decline", ImVec2(bw, 0), ButtonKind::Ghost, Icon::Close)) {
+                entry->second.window_state &= ~(window_state_lobby_invite | window_state_rich_invite);
+                if (p.closing < 0.0f) p.closing = 0.0f;
+            }
+        } else {
+            ui::text_muted("Press %s to answer", key_combo_text().c_str());
+        }
+
+        // time left
+        ui::spacer(8.0f);
+        float left = std::clamp(1.0f - p.elapsed / LIFETIME, 0.0f, 1.0f);
+        char secs[16];
+        snprintf(secs, sizeof(secs), "%ds", (int)std::ceil(LIFETIME - p.elapsed));
+        ui::bone_progress(left, ImVec2(-1, S(10.0f)), overlay_shown ? nullptr : secs);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+
+    pop_imgui_style(style_counts);
+    ImGui::PopFont();
+}
+
 void PupOverlay::render_side_windows()
 {
     for (auto &entry : ov.friends) {
