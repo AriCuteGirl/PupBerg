@@ -121,9 +121,9 @@ void PupOverlay::load_prefs()
         ui_scale = std::clamp(j.value("ui_scale", ui_scale), 0.5f, 3.0f);
         if (j.contains("classic_frontend")) {
             bool classic = j.value("classic_frontend", false);
+            // this runs inside the Steam_Client constructor, calling get_steam_client() here
+            // would construct another client and recurse until the stack overflows
             ov.settings->pupberg.classic_frontend = classic;
-            get_steam_client()->settings_client->pupberg.classic_frontend = classic;
-            get_steam_client()->settings_server->pupberg.classic_frontend = classic;
         }
         zt_auto_join = j.value("zerotier_auto_join", zt_auto_join);
         std::string net = j.value("zerotier_network", std::string(zt_network_input));

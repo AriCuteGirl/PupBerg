@@ -99,7 +99,15 @@ write_user_ini() {
 targets=("${XDG_DATA_HOME:-$HOME/.local/share}/GSE Saves/settings/configs.user.ini")
 
 # Proton/Wine prefixes where the emu already ran, plus any passed on the command line
-search_roots=("$HOME/.wine" "$HOME/.local/share/proton-pfx" "$steam_dir/steamapps/compatdata")
+search_roots=(
+  "$HOME/.wine"
+  "$HOME/.local/share/proton-pfx"
+  "$steam_dir/steamapps/compatdata"
+  "$HOME/PortProton/data/prefixes"
+  "$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles"
+  "$HOME/.local/share/bottles/bottles"
+  "$HOME/Games"
+)
 if [[ -f "$steam_dir/steamapps/libraryfolders.vdf" ]]; then
   while IFS= read -r lib; do
     search_roots+=("$lib/steamapps/compatdata")
