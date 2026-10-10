@@ -516,7 +516,7 @@ void Steam_Overlay::create_fonts()
     font_ach_desc = add_overlay_font(font_size_ach_desc, settings->overlay_appearance.font_override_ach_desc);
     stats.font = font_fps;
 
-    bool res = fonts_atlas.IsBuilt();
+    bool res = fonts_atlas.Fonts.Size > 0 && fonts_atlas.TexIsBuilt;
     PRINT_DEBUG("isbuilt fonts atlas (result=%i)", (int)res);
 
     reset_LastError();
@@ -1100,7 +1100,7 @@ void Steam_Overlay::set_next_notification_pos(std::pair<float, float> scrn_size,
 
         const auto &ach = noti.ach.value();
         const float ach_text_width = noti_width - padding_all_sides - global_style.ItemSpacing.x - settings->overlay_appearance.icon_size;
-        ImGui::PushFont(font_ach_title);
+        ImGui::PushFont(font_ach_title, font_ach_title ? font_ach_title->LegacySize : 0.0f);
         float new_msg_height = ImGui::CalcTextSize(
             ach.title.c_str(),
             ach.title.c_str() + ach.title.size(),
@@ -1109,7 +1109,7 @@ void Steam_Overlay::set_next_notification_pos(std::pair<float, float> scrn_size,
         ).y;
         ImGui::PopFont();
         if (ach.description.size()) {
-            ImGui::PushFont(font_ach_desc);
+            ImGui::PushFont(font_ach_desc, font_ach_desc ? font_ach_desc->LegacySize : 0.0f);
             new_msg_height += global_style.ItemSpacing.y + ImGui::CalcTextSize(
                 ach.description.c_str(),
                 ach.description.c_str() + ach.description.size(),
@@ -1275,7 +1275,7 @@ void Steam_Overlay::build_notifications(float width, float height)
     auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
     std::queue<Friend> friend_actions_temp{};
 
-    ImGui::PushFont(font_notif);
+    ImGui::PushFont(font_notif, font_notif ? font_notif->LegacySize : 0.0f);
     // Add window rounding
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, settings->overlay_appearance.notification_rounding);
 
@@ -1358,22 +1358,22 @@ void Steam_Overlay::build_notifications(float width, float height)
                         ImGui::TableSetColumnIndex(0);
                         ImGui::Image(icon_rsrc->GetResourceId(), ImVec2(settings->overlay_appearance.icon_size, settings->overlay_appearance.icon_size));
                         ImGui::TableSetColumnIndex(1);
-                        ImGui::PushFont(font_ach_title);
+                        ImGui::PushFont(font_ach_title, font_ach_title ? font_ach_title->LegacySize : 0.0f);
                         ImGui::TextWrapped("%s", ach.title.c_str());
                         ImGui::PopFont();
                         if (ach.description.size()) {
-                            ImGui::PushFont(font_ach_desc);
+                            ImGui::PushFont(font_ach_desc, font_ach_desc ? font_ach_desc->LegacySize : 0.0f);
                             ImGui::TextWrapped("%s", ach.description.c_str());
                             ImGui::PopFont();
                         }
 
                         ImGui::EndTable();
                     } else {
-                        ImGui::PushFont(font_ach_title);
+                        ImGui::PushFont(font_ach_title, font_ach_title ? font_ach_title->LegacySize : 0.0f);
                         ImGui::TextWrapped("%s", ach.title.c_str());
                         ImGui::PopFont();
                         if (ach.description.size()) {
-                            ImGui::PushFont(font_ach_desc);
+                            ImGui::PushFont(font_ach_desc, font_ach_desc ? font_ach_desc->LegacySize : 0.0f);
                             ImGui::TextWrapped("%s", ach.description.c_str());
                             ImGui::PopFont();
                         }
@@ -2015,7 +2015,7 @@ void Steam_Overlay::render_main_window()
 
     ImGuiIO &io = ImGui::GetIO();
 
-    ImGui::PushFont(font_default);
+    ImGui::PushFont(font_default, font_default ? font_default->LegacySize : 0.0f);
     uint32 style_color_stack = apply_global_style_color();
 
     ImGui::SetNextWindowPos({ 0, 0 });
@@ -3241,7 +3241,7 @@ void Steam_Overlay::render_gallery_window()
 {
     if (!show_screenshots_window) return;
 
-    ImGui::PushFont(font_default);
+    ImGui::PushFont(font_default, font_default ? font_default->LegacySize : 0.0f);
     uint32 style_color_stack = apply_global_style_color();
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(400, 300), ImVec2(8192, 8192));
@@ -4159,7 +4159,7 @@ void Steam_Overlay::render_pinned_screenshot()
     if (pinned_screenshots.empty())
         return;
 
-    ImGui::PushFont(font_default);
+    ImGui::PushFont(font_default, font_default ? font_default->LegacySize : 0.0f);
 
     // Track overlay state transitions once — applies to all pin windows.
     static bool prev_overlay_state = false;

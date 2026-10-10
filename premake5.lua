@@ -926,6 +926,9 @@ project "api_experimental"
     filter {} -- reset the filter and remove all active keywords
     defines { -- added to all filters, later defines will be appended
         "EMU_OVERLAY", "ImTextureID=ImU64",
+        -- PupBerg: the ImGui defines ingame_overlay compiles ImGui with (its PUBLIC compile definitions), without them
+        -- our view of ImGuiContext/ImFontAtlas has a different layout than the one ImGui actually uses
+        "IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "IMGUI_DISABLE_OBSOLETE_KEYIO", "IMGUI_DISABLE_APPLE_GAMEPAD",
         "EMU_EXPERIMENTAL_BUILD",
     }
 
@@ -1081,6 +1084,9 @@ project "steamclient_experimental"
     filter {} -- reset the filter and remove all active keywords
     defines { -- added to all filters, later defines will be appended
         "STEAMCLIENT_DLL", "EMU_OVERLAY", "ImTextureID=ImU64",
+        -- PupBerg: the ImGui defines ingame_overlay compiles ImGui with (its PUBLIC compile definitions), without them
+        -- our view of ImGuiContext/ImFontAtlas has a different layout than the one ImGui actually uses
+        "IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "IMGUI_DISABLE_OBSOLETE_KEYIO", "IMGUI_DISABLE_APPLE_GAMEPAD",
         "EMU_EXPERIMENTAL_BUILD",
     }
 
